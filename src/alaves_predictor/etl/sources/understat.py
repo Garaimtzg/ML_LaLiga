@@ -2,9 +2,14 @@
 
 Understat no ofrece API: la página https://understat.com/league/La_liga/<año>
 (año = inicio de temporada, p. ej. 2018 para la 2018-19) lleva embebido un
-`var matchesData = JSON.parse('...')` con todos los partidos de la temporada,
+`var datesData = JSON.parse('...')` con todos los partidos de la temporada,
 con los caracteres especiales escapados como \\xNN. Aquí se extrae ese bloque,
 se desescapa y se valida con pydantic.
+
+El nombre de la variable ha variado entre páginas/épocas del sitio
+(`datesData` en la página de liga; `matchesData` en otras), así que se
+aceptan ambos; si no aparece ninguno, el error lista las variables
+JSON.parse que sí hay en la página para diagnosticar sin re-descargar.
 
 Nota (ADR-003): la página también incluye `teamsData` con npxG y PPDA por
 partido; se incorporará en F2 cuando las features lo necesiten.
@@ -23,7 +28,11 @@ from alaves_predictor.etl.errors import SourceFormatError
 
 SOURCE_NAME = "understat"
 
-_MATCHES_DATA_RE = re.compile(r"var\s+matchesData\s*=\s*JSON\.parse\('(.*?)'\)", re.DOTALL)
+# La página de liga usa datesData; matchesData se mantiene como fallback.
+_MATCHES_DATA_RE = re.compile(
+    r"var\s+(?:datesData|matchesData)\s*=\s*JSON\.parse\('(.*?)'\)", re.DOTALL
+)
+_ANY_JSON_VAR_RE = re.compile(r"var\s+(\w+)\s*=\s*JSON\.parse")
 
 
 class UnderstatMatch(BaseModel):
@@ -57,7 +66,7 @@ def decode_embedded_json(escaped: str) -> list[dict]:
     decoded = escaped.encode("utf-8").decode("unicode_escape").encode("latin-1").decode("utf-8")
     data = json.loads(decoded)
     if not isinstance(data, list):
-        raise SourceFormatError("matchesData de Understat no es una lista.")
+        raise SourceFormatError("El JSON de partidos de Understat no es una lista.")
     return data
 
 
@@ -65,9 +74,15 @@ def parse_league_page(html: str) -> list[UnderstatMatch]:
     """Extrae los partidos ya jugados (isResult=true) de la página de liga."""
     found = _MATCHES_DATA_RE.search(html)
     if not found:
+        available = sorted(set(_ANY_JSON_VAR_RE.findall(html)))
+        hint = (
+            f"variables JSON.parse presentes: {', '.join(available)}"
+            if available
+            else "la página no contiene ningún JSON.parse (¿página de error o bloqueo?); "
+            "borra el archivo cacheado en data/raw/understat/ o usa --force"
+        )
         raise SourceFormatError(
-            "No se encuentra 'matchesData' en la página de Understat; "
-            "la web puede haber cambiado de estructura."
+            f"No se encuentra 'datesData'/'matchesData' en la página de Understat; {hint}."
         )
     raw_matches = decode_embedded_json(found.group(1))
 

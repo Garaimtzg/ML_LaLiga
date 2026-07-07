@@ -71,8 +71,20 @@ def test_understat_decodifica_acentos() -> None:
     assert data == [{"name": "Alavés"}]
 
 
-def test_understat_html_sin_matchesdata_falla() -> None:
-    with pytest.raises(SourceFormatError, match="matchesData"):
+def test_understat_acepta_matchesdata_como_fallback() -> None:
+    """El nombre de la variable ha cambiado entre épocas del sitio; se aceptan ambos."""
+    html = (FIXTURES / "understat_mini.html").read_text().replace("datesData", "matchesData")
+    assert len(understat.parse_league_page(html)) == 12
+
+
+def test_understat_html_sin_datos_lista_variables_disponibles() -> None:
+    html = "<script>var playersData = JSON.parse('\\x5b\\x5d');</script>"
+    with pytest.raises(SourceFormatError, match="playersData"):
+        understat.parse_league_page(html)
+
+
+def test_understat_pagina_de_bloqueo_sugiere_borrar_cache() -> None:
+    with pytest.raises(SourceFormatError, match="data/raw/understat"):
         understat.parse_league_page("<html><body>mantenimiento</body></html>")
 
 
