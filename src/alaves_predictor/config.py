@@ -1,0 +1,98 @@
+"""Carga y validación de la configuración del proyecto.
+
+Toda la parametrización (temporadas, fuentes, equipos) vive en config/*.toml
+(CLAUDE.md §8: nada hardcodeado en código). Este módulo la valida con pydantic
+y la expone como objetos tipados.
+"""
+
+from __future__ import annotations
+
+import tomllib
+from pathlib import Path
+
+from pydantic import BaseModel, Field
+
+
+class LeagueConfig(BaseModel):
+    teams_per_season: int = 20
+
+    @property
+    def rounds(self) -> int:
+        """Jornadas de una liga a doble vuelta: 2·(n−1)."""
+        return 2 * (self.teams_per_season - 1)
+
+    @property
+    def matches_per_season(self) -> int:
+        """Partidos totales: n·(n−1) (cada par se enfrenta ida y vuelta)."""
+        return self.teams_per_season * (self.teams_per_season - 1)
+
+
+class DataConfig(BaseModel):
+    db_path: Path
+    raw_dir: Path
+
+
+class FootballDataConfig(BaseModel):
+    base_url: str
+    division: str = "SP1"
+    rate_limit_seconds: float = 1.0
+
+
+class UnderstatConfig(BaseModel):
+    base_url: str
+    rate_limit_seconds: float = 3.0
+
+
+class ClubEloConfig(BaseModel):
+    base_url: str
+    rate_limit_seconds: float = 2.0
+    history_start: str = "2018-07-01"
+
+
+class SourcesConfig(BaseModel):
+    football_data: FootballDataConfig
+    understat: UnderstatConfig
+    clubelo: ClubEloConfig
+
+
+class TeamConfig(BaseModel):
+    """Nombre canónico de un equipo y sus alias en cada fuente."""
+
+    name: str
+    football_data: str
+    understat: str
+    clubelo: str
+
+
+class Settings(BaseModel):
+    focus_team: str
+    current_season: str
+    league: LeagueConfig = Field(default_factory=LeagueConfig)
+    historical_seasons: list[str]
+    data: DataConfig
+    sources: SourcesConfig
+    teams: dict[str, TeamConfig]
+
+
+def load_settings(config_dir: Path = Path("config")) -> Settings:
+    """Lee config/settings.toml y config/teams.toml y devuelve Settings validado."""
+    settings_path = config_dir / "settings.toml"
+    teams_path = config_dir / "teams.toml"
+    if not settings_path.exists():
+        raise FileNotFoundError(
+            f"No se encuentra {settings_path}. Ejecuta los comandos desde la raíz del repo."
+        )
+    with settings_path.open("rb") as fh:
+        raw = tomllib.load(fh)
+    with teams_path.open("rb") as fh:
+        teams_raw = tomllib.load(fh)
+
+    return Settings(
+        focus_team=raw["project"]["focus_team"],
+        current_season=raw["project"]["current_season"],
+        league=LeagueConfig(**raw.get("league", {})),
+        historical_seasons=raw["seasons"]["historical"],
+        data=DataConfig(**raw["data"]),
+        sources=SourcesConfig(**raw["sources"]),
+        teams={team_id: TeamConfig(**cfg) for team_id, cfg in teams_raw.items()},
+    )
