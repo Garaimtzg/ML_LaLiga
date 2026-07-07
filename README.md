@@ -34,7 +34,16 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ## Puesta en marcha (en tu WSL)
 
+> **Importante — dónde clonar**: clona dentro del sistema de archivos de WSL
+> (p. ej. `~/proyectos/`), **no** en `/mnt/c/...` ni en una carpeta de OneDrive.
+> SQLite sobre el puente Windows↔WSL sufre bloqueos espurios ("database is
+> locked") y OneDrive puede bloquear/corromper `data/alaves.db` al
+> sincronizarla a mitad de escritura. El código reintenta 30 s, pero la
+> solución de verdad es el sistema de archivos nativo de WSL (además, todo el
+> I/O va mucho más rápido).
+
 ```bash
+cd ~ && mkdir -p proyectos && cd proyectos
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)

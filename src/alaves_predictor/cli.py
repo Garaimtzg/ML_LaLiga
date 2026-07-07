@@ -8,6 +8,7 @@ funcione todavía.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import typer
@@ -53,6 +54,17 @@ def ingest(
         report = ingest_historical(conn, settings, force=force)
     except ETLError as exc:
         typer.secho(f"ERROR de ingesta: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    except sqlite3.OperationalError as exc:
+        typer.secho(
+            f"ERROR de base de datos: {exc}. Si dice 'database is locked': cierra "
+            "cualquier proceso que use data/alaves.db (visores SQLite, otra ingesta) "
+            "y evita que OneDrive sincronice el repo mientras trabaja — lo más fiable "
+            "es clonar el proyecto dentro del sistema de archivos de WSL (p. ej. "
+            "~/proyectos/ML_LaLiga) en vez de /mnt/c/...OneDrive.",
+            fg=typer.colors.RED,
+            err=True,
+        )
         raise typer.Exit(code=1) from exc
     finally:
         conn.close()

@@ -180,9 +180,14 @@ CREATE INDEX IF NOT EXISTS idx_elo_date ON elo(date);
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
-    """Abre la BD (creando el directorio si falta) con claves foráneas activas."""
+    """Abre la BD (creando el directorio si falta) con claves foráneas activas.
+
+    timeout=30: si otro proceso (u OneDrive sincronizando el archivo) tiene el
+    bloqueo, SQLite reintenta durante 30 s antes de rendirse con
+    'database is locked', en vez de fallar al instante.
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
