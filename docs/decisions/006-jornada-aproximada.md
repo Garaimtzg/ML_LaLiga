@@ -39,3 +39,9 @@ un scraper (fragilidad) para un dato de valor marginal.
   temporada en curso tendrá jornada oficial; si se quisiera corregir el
   histórico, sería una mejora localizada en `assign_matchdays`.
 - Test dedicado que documenta el comportamiento con aplazamientos.
+
+## Actualización (2026-07-07, ADR-008)
+
+Con el cambio del xG a FBref, su columna **Wk (jornada oficial)** sobreescribe
+esta aproximación para todos los partidos que FBref cubre. El conteo del
+`assign_matchdays` se mantiene como base/fallback para partidos sin Wk.

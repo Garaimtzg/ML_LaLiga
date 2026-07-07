@@ -19,14 +19,14 @@ def test_ingesta_historica_completa(mini_settings, fake_fetch) -> None:
         assert report.xg_matched_by_season == {"2018-19": 12}
         assert report.warnings == []
 
-        # Estadísticas: 2 filas por partido, con shots (football-data) y xg (understat)
+        # Estadísticas: 2 filas por partido, con shots (football-data) y xg (fbref)
         n_stats = conn.execute("SELECT COUNT(*) AS n FROM match_stats").fetchone()["n"]
         assert n_stats == 24
         merged = conn.execute(
             "SELECT source, shots, xg FROM match_stats WHERE match_id = ? AND team_id = ?",
             (make_match_id("2018-19", "alaves", "barcelona"), "alaves"),
         ).fetchone()
-        assert merged["source"] == "football-data+understat"
+        assert merged["source"] == "football-data+fbref"
         assert merged["shots"] == 10
         assert merged["xg"] == pytest.approx(1.2)
 
@@ -39,7 +39,8 @@ def test_ingesta_historica_completa(mini_settings, fake_fetch) -> None:
         ).fetchone()
         assert odds["open_h"] == 1.5 and odds["close_h"] == 1.45
 
-        # Jornadas: 6 jornadas de 2 partidos
+        # Jornadas: 6 jornadas de 2 partidos (la Wk oficial de FBref
+        # sobreescribe la aproximación por conteo)
         rows = conn.execute(
             "SELECT matchday, COUNT(*) AS n FROM matches GROUP BY matchday ORDER BY matchday"
         ).fetchall()
@@ -75,11 +76,9 @@ def test_marcador_discrepante_aborta(mini_settings, fake_fetch, monkeypatch) -> 
 
     def corrupted(url, cache_path, **kwargs):
         text = original(url, cache_path, **kwargs)
-        if "us.test" in url:
-            # Rompe el marcador 1-2 del primer partido (goals h "1" -> "9")
-            good = r"goals\x22:\x7b\x22h\x22:\x221\x22"
-            bad = r"goals\x22:\x7b\x22h\x22:\x229\x22"
-            return text.replace(good, bad, 1)
+        if "fbref.test" in url:
+            # Rompe el marcador 1–2 del primer partido (-> 9–2)
+            return text.replace(">1–2<", ">9–2<", 1)
         return text
 
     monkeypatch.setattr(ingest_mod, "fetch_text", corrupted)
@@ -91,23 +90,23 @@ def test_marcador_discrepante_aborta(mini_settings, fake_fetch, monkeypatch) -> 
         conn.close()
 
 
-def test_cache_envenenada_de_understat_se_redescarga_sola(
+def test_cache_envenenada_de_fbref_se_redescarga_sola(
     mini_settings, fake_fetch, monkeypatch
 ) -> None:
     """Si la cache tiene una página de bloqueo (sin datos), se re-descarga una vez."""
     import alaves_predictor.etl.ingest as ingest_mod
 
     original = fake_fetch
-    calls = {"understat": 0}
+    calls = {"fbref": 0}
 
     # Cache pre-existente con una página de bloqueo (de una ejecución anterior).
-    poisoned = mini_settings.data.raw_dir / "understat" / "la_liga_2018.html"
+    poisoned = mini_settings.data.raw_dir / "fbref" / "schedule_2018-2019.html"
     poisoned.parent.mkdir(parents=True, exist_ok=True)
     poisoned.write_text("<html><body>Checking your browser...</body></html>")
 
     def poisoned_then_ok(url, cache_path, **kwargs):
-        if "us.test" in url:
-            calls["understat"] += 1
+        if "fbref.test" in url:
+            calls["fbref"] += 1
             if not kwargs.get("force"):
                 return cache_path.read_text()  # 1ª llamada: lee la cache envenenada
         return original(url, cache_path, **kwargs)
@@ -117,7 +116,7 @@ def test_cache_envenenada_de_understat_se_redescarga_sola(
     try:
         report = ingest_historical(conn, mini_settings)
         assert report.xg_matched_by_season == {"2018-19": 12}
-        assert calls["understat"] == 2
+        assert calls["fbref"] == 2
     finally:
         conn.close()
 

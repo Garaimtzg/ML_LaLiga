@@ -14,6 +14,7 @@ import pytest
 from alaves_predictor.config import (
     ClubEloConfig,
     DataConfig,
+    FBrefConfig,
     FootballDataConfig,
     LeagueConfig,
     Settings,
@@ -27,19 +28,32 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 MINI_TEAMS = {
     "alaves": TeamConfig(
-        name="Deportivo Alavés", football_data="Alaves", understat="Alaves", clubelo="Alaves"
+        name="Deportivo Alavés",
+        football_data="Alaves",
+        fbref="Alavés",
+        understat="Alaves",
+        clubelo="Alaves",
     ),
     "barcelona": TeamConfig(
-        name="FC Barcelona", football_data="Barcelona", understat="Barcelona", clubelo="Barcelona"
+        name="FC Barcelona",
+        football_data="Barcelona",
+        fbref="Barcelona",
+        understat="Barcelona",
+        clubelo="Barcelona",
     ),
     "real-sociedad": TeamConfig(
         name="Real Sociedad",
         football_data="Sociedad",
+        fbref="Real Sociedad",
         understat="Real Sociedad",
         clubelo="Sociedad",
     ),
     "getafe": TeamConfig(
-        name="Getafe CF", football_data="Getafe", understat="Getafe", clubelo="Getafe"
+        name="Getafe CF",
+        football_data="Getafe",
+        fbref="Getafe",
+        understat="Getafe",
+        clubelo="Getafe",
     ),
 }
 
@@ -57,6 +71,7 @@ def mini_settings(tmp_path: Path) -> Settings:
             football_data=FootballDataConfig(
                 base_url="https://fd.test/mmz4281", rate_limit_seconds=0.0
             ),
+            fbref=FBrefConfig(base_url="https://fbref.test/en/comps", rate_limit_seconds=0.0),
             understat=UnderstatConfig(
                 base_url="https://us.test/league/La_liga", rate_limit_seconds=0.0
             ),
@@ -75,6 +90,8 @@ def fake_fetch(monkeypatch: pytest.MonkeyPatch):
     def _fetch(url: str, cache_path: Path, **kwargs) -> str:
         if "fd.test" in url:
             return (FIXTURES / "football_data_mini.csv").read_text()
+        if "fbref.test" in url:
+            return (FIXTURES / "fbref_schedule_mini.html").read_text()
         if "us.test" in url:
             return (FIXTURES / "understat_mini.html").read_text()
         if "elo.test" in url:

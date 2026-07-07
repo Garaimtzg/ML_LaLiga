@@ -28,12 +28,13 @@ def test_equipos_cubren_todas_las_fuentes() -> None:
     for team_id, cfg in settings.teams.items():
         assert cfg.name, team_id
         assert cfg.football_data, team_id
+        assert cfg.fbref, team_id
         assert cfg.understat, team_id
         assert cfg.clubelo and " " not in cfg.clubelo, team_id  # alias de URL
 
 
 def test_alias_unicos_por_fuente() -> None:
     settings = load_settings(CONFIG_DIR)
-    for source in ("football_data", "understat", "clubelo"):
+    for source in ("football_data", "fbref", "understat", "clubelo"):
         aliases = [getattr(cfg, source) for cfg in settings.teams.values()]
         assert len(aliases) == len(set(aliases)), f"alias duplicado en {source}"

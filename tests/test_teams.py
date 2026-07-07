@@ -13,8 +13,10 @@ from .conftest import MINI_TEAMS
 def test_resuelve_alias_por_fuente() -> None:
     registry = TeamRegistry(MINI_TEAMS)
     assert registry.resolve("football_data", "Sociedad") == "real-sociedad"
+    assert registry.resolve("fbref", "Real Sociedad") == "real-sociedad"
     assert registry.resolve("understat", "Real Sociedad") == "real-sociedad"
     assert registry.resolve("clubelo", "Sociedad") == "real-sociedad"
+    assert registry.resolve("fbref", "Alavés") == "alaves"
     assert registry.resolve("football_data", "Alaves") == "alaves"
 
 

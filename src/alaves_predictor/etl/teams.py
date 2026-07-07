@@ -22,7 +22,7 @@ class TeamRegistry:
     def __init__(self, teams: dict[str, TeamConfig]) -> None:
         self._teams = teams
         self._by_source: dict[str, dict[str, str]] = {}
-        for source in ("football_data", "understat", "clubelo"):
+        for source in ("football_data", "fbref", "understat", "clubelo"):
             self._by_source[source] = {
                 getattr(cfg, source): team_id for team_id, cfg in teams.items()
             }
@@ -48,6 +48,7 @@ class TeamRegistry:
         for team_id, cfg in self._teams.items():
             aliases = {
                 "football_data": cfg.football_data,
+                "fbref": cfg.fbref,
                 "understat": cfg.understat,
                 "clubelo": cfg.clubelo,
                 "_seeded_at": now,

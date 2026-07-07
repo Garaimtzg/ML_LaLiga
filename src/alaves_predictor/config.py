@@ -38,6 +38,13 @@ class FootballDataConfig(BaseModel):
     rate_limit_seconds: float = 1.0
 
 
+class FBrefConfig(BaseModel):
+    base_url: str
+    competition_id: int = 12  # La Liga en FBref
+    competition_slug: str = "La-Liga"
+    rate_limit_seconds: float = 6.0
+
+
 class UnderstatConfig(BaseModel):
     base_url: str
     rate_limit_seconds: float = 3.0
@@ -51,7 +58,8 @@ class ClubEloConfig(BaseModel):
 
 class SourcesConfig(BaseModel):
     football_data: FootballDataConfig
-    understat: UnderstatConfig
+    fbref: FBrefConfig
+    understat: UnderstatConfig  # en pausa: rediseño de dic-2025 (ADR-008)
     clubelo: ClubEloConfig
 
 
@@ -60,6 +68,7 @@ class TeamConfig(BaseModel):
 
     name: str
     football_data: str
+    fbref: str
     understat: str
     clubelo: str
 

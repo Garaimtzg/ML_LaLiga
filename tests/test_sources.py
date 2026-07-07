@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from alaves_predictor.etl.errors import SourceFormatError
-from alaves_predictor.etl.sources import clubelo, football_data, understat
+from alaves_predictor.etl.sources import clubelo, fbref, football_data, understat
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -50,7 +50,45 @@ def test_football_data_season_code() -> None:
     assert football_data.season_code("2025-26") == "2526"
 
 
-# --- Understat ---------------------------------------------------------------
+# --- FBref -------------------------------------------------------------------
+
+
+def test_fbref_parsea_fixture() -> None:
+    matches = fbref.parse_schedule((FIXTURES / "fbref_schedule_mini.html").read_text())
+    # 12 jugados; se ignoran la fila espaciadora y el partido futuro sin marcador
+    assert len(matches) == 12
+    first = matches[0]
+    assert first.matchday == 1
+    assert first.match_date == date(2018, 8, 18)
+    assert (first.home_team, first.away_team) == ("Alavés", "Barcelona")
+    assert (first.home_goals, first.away_goals) == (1, 2)
+    assert first.home_xg == pytest.approx(1.2)
+    assert first.away_xg == pytest.approx(2.0)
+
+
+def test_fbref_sin_tabla_falla_ruidosamente() -> None:
+    with pytest.raises(SourceFormatError, match="sched"):
+        fbref.parse_schedule("<html><body>Attention Required! | Cloudflare</body></html>")
+
+
+def test_fbref_marcador_raro_falla() -> None:
+    html = (FIXTURES / "fbref_schedule_mini.html").read_text().replace(">1–2<", ">1:2<", 1)
+    with pytest.raises(SourceFormatError, match="formato inesperado"):
+        fbref.parse_schedule(html)
+
+
+def test_fbref_season_slug_y_url() -> None:
+    from alaves_predictor.config import FBrefConfig
+
+    assert fbref.season_slug("2018-19") == "2018-2019"
+    assert fbref.season_slug("2025-26") == "2025-2026"
+    cfg = FBrefConfig(base_url="https://fbref.com/en/comps")
+    assert fbref.schedule_url("2018-19", cfg) == (
+        "https://fbref.com/en/comps/12/2018-2019/schedule/2018-2019-La-Liga-Scores-and-Fixtures"
+    )
+
+
+# --- Understat (EN PAUSA, ADR-008: el parser se conserva para el formato antiguo) ---
 
 
 def test_understat_parsea_fixture() -> None:

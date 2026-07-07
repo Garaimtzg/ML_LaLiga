@@ -3,10 +3,11 @@
 Flujo por temporada:
 1. football-data.co.uk -> matches + match_stats (tiros, córners, faltas,
    tarjetas) + odds. Es la fuente autoritativa de resultados.
-2. Understat -> añade xG a match_stats, cruzando cada partido con el ya
-   insertado y verificando que el marcador coincide (discrepancia -> error
-   ruidoso, CLAUDE.md §6).
-3. Asignación de jornada aproximada (ADR-006).
+2. Asignación de jornada aproximada por conteo (ADR-006), como base.
+3. FBref -> añade xG a match_stats y la jornada oficial (columna Wk),
+   cruzando cada partido con el ya insertado y verificando que el marcador
+   coincide (discrepancia -> error ruidoso, CLAUDE.md §6). Sustituye a
+   Understat, cuyo rediseño de dic-2025 eliminó el JSON embebido (ADR-008).
 
 Después, ClubElo -> tabla elo (histórico por club, una petición por equipo).
 
@@ -24,7 +25,7 @@ from alaves_predictor.config import Settings
 from alaves_predictor.etl import db
 from alaves_predictor.etl.errors import SourceConsistencyError, SourceFormatError
 from alaves_predictor.etl.http_cache import fetch_text
-from alaves_predictor.etl.sources import clubelo, football_data, understat
+from alaves_predictor.etl.sources import clubelo, fbref, football_data
 from alaves_predictor.etl.teams import TeamRegistry
 
 
@@ -201,7 +202,7 @@ def _upsert_match_stats(
     )
 
 
-def ingest_understat_season(
+def ingest_fbref_season(
     conn: sqlite3.Connection,
     season: str,
     settings: Settings,
@@ -209,46 +210,38 @@ def ingest_understat_season(
     *,
     force: bool = False,
 ) -> int:
-    """Añade xG de Understat a los partidos ya cargados. Devuelve nº de partidos cruzados."""
-    cfg = settings.sources.understat
-    url = understat.league_url(season, cfg)
-    cache = settings.data.raw_dir / "understat" / f"la_liga_{understat.season_year(season)}.html"
+    """Añade xG y jornada oficial de FBref a los partidos ya cargados.
+
+    Devuelve el nº de partidos cruzados con xG. La jornada oficial (columna Wk)
+    sobreescribe la aproximación por conteo de assign_matchdays (ADR-006/008).
+    """
+    cfg = settings.sources.fbref
+    url = fbref.schedule_url(season, cfg)
+    cache = settings.data.raw_dir / "fbref" / f"schedule_{fbref.season_slug(season)}.html"
     had_cache = cache.exists()
-    text = fetch_text(
-        url,
-        cache,
-        rate_limit_seconds=cfg.rate_limit_seconds,
-        force=force,
-        headers=understat.BROWSER_HEADERS,
-    )
+    text = fetch_text(url, cache, rate_limit_seconds=cfg.rate_limit_seconds, force=force)
     try:
-        us_matches = understat.parse_league_page(text)
+        fb_matches = fbref.parse_schedule(text)
     except SourceFormatError:
         if not (had_cache and not force):
             raise
         # La cache puede contener una página de bloqueo/error de una descarga
         # antigua: se re-descarga UNA vez antes de rendirse.
-        text = fetch_text(
-            url,
-            cache,
-            rate_limit_seconds=cfg.rate_limit_seconds,
-            force=True,
-            headers=understat.BROWSER_HEADERS,
-        )
-        us_matches = understat.parse_league_page(text)
+        text = fetch_text(url, cache, rate_limit_seconds=cfg.rate_limit_seconds, force=True)
+        fb_matches = fbref.parse_schedule(text)
     now = datetime.now(UTC).isoformat()
 
     matched = 0
-    for m in us_matches:
-        home_id = registry.resolve("understat", m.home_team)
-        away_id = registry.resolve("understat", m.away_team)
+    for m in fb_matches:
+        home_id = registry.resolve("fbref", m.home_team)
+        away_id = registry.resolve("fbref", m.away_team)
         match_id = make_match_id(season, home_id, away_id)
         row = conn.execute(
             "SELECT date, home_goals, away_goals FROM matches WHERE match_id = ?", (match_id,)
         ).fetchone()
         if row is None:
             raise SourceConsistencyError(
-                f"Understat tiene el partido {home_id} vs {away_id} ({m.match_date}, temporada "
+                f"FBref tiene el partido {home_id} vs {away_id} ({m.match_date}, temporada "
                 f"{season}) pero football-data no. Revisa la ingesta antes de continuar."
             )
         # Verificación cruzada de marcadores (CLAUDE.md §6). La fecha puede
@@ -256,26 +249,32 @@ def ingest_understat_season(
         if (row["home_goals"], row["away_goals"]) != (m.home_goals, m.away_goals):
             raise SourceConsistencyError(
                 f"Marcador discrepante en {match_id}: football-data "
-                f"{row['home_goals']}-{row['away_goals']} vs Understat "
+                f"{row['home_goals']}-{row['away_goals']} vs FBref "
                 f"{m.home_goals}-{m.away_goals}. No se inserta nada."
             )
         stored_date = date.fromisoformat(row["date"])
         if abs((stored_date - m.match_date).days) > 1:
             raise SourceConsistencyError(
                 f"Fecha discrepante en {match_id}: football-data {stored_date} vs "
-                f"Understat {m.match_date} (>1 día de diferencia)."
+                f"FBref {m.match_date} (>1 día de diferencia)."
             )
-        for team_id, is_home, xg in ((home_id, 1, m.home_xg), (away_id, 0, m.away_xg)):
-            _upsert_match_stats(
-                conn,
-                match_id=match_id,
-                team_id=team_id,
-                is_home=is_home,
-                values={"xg": xg},
-                source=understat.SOURCE_NAME,
-                fetched_at=now,
+        if m.matchday is not None:
+            # Jornada oficial de FBref > aproximación por conteo (ADR-006).
+            conn.execute(
+                "UPDATE matches SET matchday = ? WHERE match_id = ?", (m.matchday, match_id)
             )
-        matched += 1
+        if m.home_xg is not None and m.away_xg is not None:
+            for team_id, is_home, xg in ((home_id, 1, m.home_xg), (away_id, 0, m.away_xg)):
+                _upsert_match_stats(
+                    conn,
+                    match_id=match_id,
+                    team_id=team_id,
+                    is_home=is_home,
+                    values={"xg": xg},
+                    source=fbref.SOURCE_NAME,
+                    fetched_at=now,
+                )
+            matched += 1
     conn.commit()
     return matched
 
@@ -334,13 +333,14 @@ def ingest_historical(
     for season in settings.historical_seasons:
         n_matches = ingest_football_data_season(conn, season, settings, registry, force=force)
         report.matches_by_season[season] = n_matches
-        n_xg = ingest_understat_season(conn, season, settings, registry, force=force)
-        report.xg_matched_by_season[season] = n_xg
+        # Base aproximada por conteo; FBref la sobreescribe con la Wk oficial.
         assign_matchdays(conn, season)
+        n_xg = ingest_fbref_season(conn, season, settings, registry, force=force)
+        report.xg_matched_by_season[season] = n_xg
         conn.commit()
         if n_xg < n_matches:
             report.warnings.append(
-                f"{season}: Understat solo cubre {n_xg}/{n_matches} partidos con xG."
+                f"{season}: FBref solo cubre {n_xg}/{n_matches} partidos con xG."
             )
 
     report.elo_rows_by_team = ingest_clubelo(conn, settings, registry, force=force)

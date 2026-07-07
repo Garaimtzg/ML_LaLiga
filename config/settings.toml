@@ -34,8 +34,18 @@ base_url = "https://www.football-data.co.uk/mmz4281"
 division = "SP1"               # Primera División española
 rate_limit_seconds = 1.0
 
+[sources.fbref]
+# xG por partido y jornada oficial, de la página Scores & Fixtures (ADR-008).
+# Rate limit conservador: FBref pide moderación a los bots.
+base_url = "https://fbref.com/en/comps"
+competition_id = 12
+competition_slug = "La-Liga"
+rate_limit_seconds = 6.0
+
 [sources.understat]
-# xG por partido. La URL usa el año de inicio de temporada: /La_liga/2018.
+# EN PAUSA (ADR-008): el rediseño de understat.com de dic-2025 eliminó el JSON
+# embebido del que se extraía el xG. Se conserva el adaptador por si se adapta
+# al nuevo formato en F2 como fuente de contraste.
 base_url = "https://understat.com/league/La_liga"
 rate_limit_seconds = 3.0
 

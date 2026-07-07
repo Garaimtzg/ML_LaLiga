@@ -38,7 +38,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (26 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (33 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
@@ -85,18 +85,21 @@ uv run mypy src                        # tipos (modo básico)
 | Fuente | Aporta | Tablas |
 |--------|--------|--------|
 | [football-data.co.uk](https://www.football-data.co.uk/spainm.php) | Resultados, tiros/córners/faltas/tarjetas y **cuotas** (bet365, Pinnacle, máx./media de mercado; apertura y cierre) | `matches`, `match_stats`, `odds` |
-| [Understat](https://understat.com/league/La_liga) | **xG** por partido y equipo | `match_stats.xg` |
+| [FBref](https://fbref.com/en/comps/12/) | **xG** por partido y equipo + **jornada oficial** (Wk) | `match_stats.xg`, `matches.matchday` |
 | [ClubElo](http://clubelo.com) | Rating **Elo** histórico por club | `elo` |
 
-Cobertura: temporadas **2018-19 → 2025-26** (≈ 3.040 partidos). FBref
-(estadísticas técnico-tácticas), Transfermarkt (valor de plantillas) y
-API-Football (calendario 2026-27, lesiones) se incorporan en F2/F7 (ADR-003).
+Cobertura: temporadas **2018-19 → 2025-26** (≈ 3.040 partidos). Las
+estadísticas técnico-tácticas detalladas de FBref, Transfermarkt (valor de
+plantillas) y API-Football (calendario 2026-27, lesiones) se incorporan en
+F2/F7 (ADR-003). **Understat**, previsto como fuente de xG, quedó en pausa:
+su rediseño de dic-2025 eliminó los datos embebidos de los que dependía todo
+el ecosistema de scraping (ADR-008).
 
 Garantías del pipeline (CLAUDE.md §6):
 
 - **Validación de esquema** con pydantic en cada parser; formato inesperado →
   error ruidoso, nunca inserción silenciosa.
-- **Consistencia entre fuentes**: el marcador de Understat se cruza con el de
+- **Consistencia entre fuentes**: el marcador de FBref se cruza con el de
   football-data antes de insertar el xG; discrepancia → aborta.
 - **Procedencia**: cada fila lleva `source` y `fetched_at`.
 - **Cache y rate limit**: nada se descarga dos veces; peticiones espaciadas
@@ -110,7 +113,7 @@ SQLite en `data/alaves.db` (gitignored). Tablas principales (esquema completo
 en [`src/alaves_predictor/etl/db.py`](src/alaves_predictor/etl/db.py)):
 
 - `teams` — id canónico, nombre y alias por fuente (`config/teams.toml`, ADR-005)
-- `matches` — partidos con temporada, jornada aproximada (ADR-006), goles y estado
+- `matches` — partidos con temporada, jornada oficial de FBref (ADR-006/008), goles y estado
 - `match_stats` — estadísticas por (partido, equipo); F1 puebla básicas + xG,
   el resto de columnas (pases, presión, portería...) esperan a FBref en F2
 - `odds` — cuotas 1X2 de apertura y cierre por casa
@@ -143,9 +146,10 @@ Identificadores legibles: `team_id = "alaves"`,
 │       ├── validate.py               # chequeos de integridad de la BD
 │       └── sources/                  # un adaptador por fuente
 │           ├── football_data.py
-│           ├── understat.py
+│           ├── fbref.py
+│           ├── understat.py          # en pausa (ADR-008)
 │           └── clubelo.py
-└── tests/                            # 26 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 33 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)
@@ -159,6 +163,7 @@ Identificadores legibles: `team_id = "alaves"`,
 | [005](docs/decisions/005-mapeo-de-nombres-de-equipos.md) | Alias explícitos en `config/teams.toml` con fallo ruidoso |
 | [006](docs/decisions/006-jornada-aproximada.md) | Jornada aproximada por conteo de partidos jugados |
 | [007](docs/decisions/007-ingesta-en-local-por-restriccion-de-red.md) | La ingesta real se ejecuta en local (WSL); tests con fixtures sin red |
+| [008](docs/decisions/008-xg-de-fbref-en-vez-de-understat.md) | xG desde FBref (+ jornada oficial); Understat en pausa tras su rediseño de dic-2025 |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 
