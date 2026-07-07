@@ -16,6 +16,10 @@ class SourceFormatError(ETLError):
     """La fuente devolvió un contenido con formato inesperado (web cambiada, HTML de error...)."""
 
 
+class SourceDownloadError(ETLError):
+    """La descarga falló (HTTP != 200, timeout, DNS...). El mensaje incluye la URL y pistas."""
+
+
 class UnknownTeamError(ETLError):
     """Una fuente usa un nombre de equipo no registrado en config/teams.toml."""
 

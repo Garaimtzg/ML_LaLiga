@@ -12,10 +12,22 @@ from pathlib import Path
 
 import httpx
 
-from alaves_predictor.etl.errors import SourceFormatError
+from alaves_predictor.etl.errors import SourceDownloadError, SourceFormatError
 
 # User-Agent identificable y honesto: proyecto personal, no un bot anónimo.
 _HEADERS = {"User-Agent": "alaves-predictor/0.1 (proyecto educativo personal; contacto via GitHub)"}
+
+# Cabeceras de navegador para las fuentes que rechazan clientes no-navegador
+# (Understat y FBref devuelven 403/página vacía al UA identificable; ADR-004).
+# Los datos son públicos y el acceso mínimo: 1 página por temporada, cacheada.
+BROWSER_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+}
 
 # Instante de la última descarga real por host, para aplicar rate limit global
 # del proceso aunque se llame desde bucles distintos.
@@ -47,9 +59,21 @@ def fetch_text(
     if elapsed < rate_limit_seconds:
         time.sleep(rate_limit_seconds - elapsed)
 
-    response = httpx.get(url, headers=headers or _HEADERS, timeout=30.0, follow_redirects=True)
+    try:
+        response = httpx.get(url, headers=headers or _HEADERS, timeout=30.0, follow_redirects=True)
+    except httpx.HTTPError as exc:
+        raise SourceDownloadError(f"Fallo de red descargando {url}: {exc}") from exc
     _last_request_at[host] = time.monotonic()
-    response.raise_for_status()
+    if response.status_code != 200:
+        hints = {
+            403: "la fuente rechaza al cliente (bloqueo anti-bot); puede requerir "
+            "cabeceras de navegador o esperar un rato",
+            404: "la URL ya no existe; la fuente puede haber cambiado de estructura",
+            429: "rate limit superado; espera unos minutos y relanza (la cache "
+            "conserva lo ya descargado)",
+        }
+        hint = hints.get(response.status_code, "revisa la URL y el estado de la fuente")
+        raise SourceDownloadError(f"HTTP {response.status_code} al descargar {url}: {hint}.")
     if encoding:
         response.encoding = encoding
     text = response.text

@@ -47,12 +47,15 @@ Dos ajustes surgidos del primer contacto con las fuentes reales:
 
 1. **Cabeceras por fuente**: el User-Agent identificable
    (`alaves-predictor/0.1`) funciona con football-data y ClubElo, pero
-   Understat sirve una página sin datos a clientes que no parecen navegador.
-   `fetch_text` acepta ahora `headers` opcionales y el adaptador de Understat
-   se presenta con cabeceras de navegador (los datos son públicos y el acceso
-   es mínimo: 1 página por temporada, cacheada, mismo patrón que las librerías
-   públicas de scraping de Understat).
-2. **Auto-recuperación de cache envenenada**: si el HTML cacheado de Understat
-   no parsea (p. ej. una página de bloqueo guardada por una ejecución
-   anterior), la ingesta lo re-descarga UNA vez antes de fallar, en lugar de
-   exigir borrado manual de `data/raw/understat/`.
+   Understat sirve una página sin datos y FBref devuelve 403 a clientes que
+   no parecen navegador. `fetch_text` acepta `headers` opcionales y
+   `http_cache.BROWSER_HEADERS` (compartidas) se usan para esas dos fuentes
+   (los datos son públicos y el acceso es mínimo: 1 página por temporada,
+   cacheada, mismo patrón que las librerías públicas de scraping).
+2. **Auto-recuperación de cache envenenada**: si un HTML cacheado no parsea
+   (p. ej. una página de bloqueo guardada por una ejecución anterior), la
+   ingesta lo re-descarga UNA vez antes de fallar, en lugar de exigir borrado
+   manual de `data/raw/`.
+3. **Errores de descarga limpios**: los fallos HTTP (403/404/429, timeouts)
+   se convierten en `SourceDownloadError` con la URL y una pista de arreglo,
+   nunca un traceback crudo (CLAUDE.md §6).

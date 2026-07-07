@@ -58,4 +58,6 @@ F1 el papel de FBref como fuente de xG. Detalles:
   aproximación (mejora para las features de F2).
 - Riesgo: FBref también protege su web (Cloudflare); si el User-Agent
   identificable resultara bloqueado en local, se aplicaría el mismo ajuste de
-  cabeceras que en ADR-004-actualización.
+  cabeceras que en ADR-004-actualización. *(Materializado el mismo día:
+  FBref devolvió 403 al UA identificable; se aplican las cabeceras de
+  navegador compartidas de `http_cache.BROWSER_HEADERS`.)*

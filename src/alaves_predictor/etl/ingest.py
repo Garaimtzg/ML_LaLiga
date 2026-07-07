@@ -24,7 +24,7 @@ from datetime import UTC, date, datetime
 from alaves_predictor.config import Settings
 from alaves_predictor.etl import db
 from alaves_predictor.etl.errors import SourceConsistencyError, SourceFormatError
-from alaves_predictor.etl.http_cache import fetch_text
+from alaves_predictor.etl.http_cache import BROWSER_HEADERS, fetch_text
 from alaves_predictor.etl.sources import clubelo, fbref, football_data
 from alaves_predictor.etl.teams import TeamRegistry
 
@@ -219,7 +219,14 @@ def ingest_fbref_season(
     url = fbref.schedule_url(season, cfg)
     cache = settings.data.raw_dir / "fbref" / f"schedule_{fbref.season_slug(season)}.html"
     had_cache = cache.exists()
-    text = fetch_text(url, cache, rate_limit_seconds=cfg.rate_limit_seconds, force=force)
+    # FBref (Cloudflare) devuelve 403 al UA identificable: cabeceras de navegador.
+    text = fetch_text(
+        url,
+        cache,
+        rate_limit_seconds=cfg.rate_limit_seconds,
+        force=force,
+        headers=BROWSER_HEADERS,
+    )
     try:
         fb_matches = fbref.parse_schedule(text)
     except SourceFormatError:
@@ -227,7 +234,13 @@ def ingest_fbref_season(
             raise
         # La cache puede contener una página de bloqueo/error de una descarga
         # antigua: se re-descarga UNA vez antes de rendirse.
-        text = fetch_text(url, cache, rate_limit_seconds=cfg.rate_limit_seconds, force=True)
+        text = fetch_text(
+            url,
+            cache,
+            rate_limit_seconds=cfg.rate_limit_seconds,
+            force=True,
+            headers=BROWSER_HEADERS,
+        )
         fb_matches = fbref.parse_schedule(text)
     now = datetime.now(UTC).isoformat()
 
