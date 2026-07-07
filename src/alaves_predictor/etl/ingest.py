@@ -22,7 +22,7 @@ from datetime import UTC, date, datetime
 
 from alaves_predictor.config import Settings
 from alaves_predictor.etl import db
-from alaves_predictor.etl.errors import SourceConsistencyError
+from alaves_predictor.etl.errors import SourceConsistencyError, SourceFormatError
 from alaves_predictor.etl.http_cache import fetch_text
 from alaves_predictor.etl.sources import clubelo, football_data, understat
 from alaves_predictor.etl.teams import TeamRegistry
@@ -213,8 +213,29 @@ def ingest_understat_season(
     cfg = settings.sources.understat
     url = understat.league_url(season, cfg)
     cache = settings.data.raw_dir / "understat" / f"la_liga_{understat.season_year(season)}.html"
-    text = fetch_text(url, cache, rate_limit_seconds=cfg.rate_limit_seconds, force=force)
-    us_matches = understat.parse_league_page(text)
+    had_cache = cache.exists()
+    text = fetch_text(
+        url,
+        cache,
+        rate_limit_seconds=cfg.rate_limit_seconds,
+        force=force,
+        headers=understat.BROWSER_HEADERS,
+    )
+    try:
+        us_matches = understat.parse_league_page(text)
+    except SourceFormatError:
+        if not (had_cache and not force):
+            raise
+        # La cache puede contener una página de bloqueo/error de una descarga
+        # antigua: se re-descarga UNA vez antes de rendirse.
+        text = fetch_text(
+            url,
+            cache,
+            rate_limit_seconds=cfg.rate_limit_seconds,
+            force=True,
+            headers=understat.BROWSER_HEADERS,
+        )
+        us_matches = understat.parse_league_page(text)
     now = datetime.now(UTC).isoformat()
 
     matched = 0

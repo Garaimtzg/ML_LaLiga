@@ -91,6 +91,37 @@ def test_marcador_discrepante_aborta(mini_settings, fake_fetch, monkeypatch) -> 
         conn.close()
 
 
+def test_cache_envenenada_de_understat_se_redescarga_sola(
+    mini_settings, fake_fetch, monkeypatch
+) -> None:
+    """Si la cache tiene una página de bloqueo (sin datos), se re-descarga una vez."""
+    import alaves_predictor.etl.ingest as ingest_mod
+
+    original = fake_fetch
+    calls = {"understat": 0}
+
+    # Cache pre-existente con una página de bloqueo (de una ejecución anterior).
+    poisoned = mini_settings.data.raw_dir / "understat" / "la_liga_2018.html"
+    poisoned.parent.mkdir(parents=True, exist_ok=True)
+    poisoned.write_text("<html><body>Checking your browser...</body></html>")
+
+    def poisoned_then_ok(url, cache_path, **kwargs):
+        if "us.test" in url:
+            calls["understat"] += 1
+            if not kwargs.get("force"):
+                return cache_path.read_text()  # 1ª llamada: lee la cache envenenada
+        return original(url, cache_path, **kwargs)
+
+    monkeypatch.setattr(ingest_mod, "fetch_text", poisoned_then_ok)
+    conn = db.connect(mini_settings.data.db_path)
+    try:
+        report = ingest_historical(conn, mini_settings)
+        assert report.xg_matched_by_season == {"2018-19": 12}
+        assert calls["understat"] == 2
+    finally:
+        conn.close()
+
+
 def test_validacion_detecta_bd_incompleta(mini_settings, fake_fetch) -> None:
     conn = db.connect(mini_settings.data.db_path)
     try:

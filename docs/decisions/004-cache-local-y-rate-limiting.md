@@ -40,3 +40,19 @@ Rate limits configurados en `config/settings.toml`: football-data 1 s
   descargado: reproducibilidad y debugging de parsers sin red.
 - El rate limit es por proceso; si algún día hay paralelismo habrá que
   revisarlo (no aplica en F1).
+
+## Actualización (2026-07-07, tras la primera ingesta real)
+
+Dos ajustes surgidos del primer contacto con las fuentes reales:
+
+1. **Cabeceras por fuente**: el User-Agent identificable
+   (`alaves-predictor/0.1`) funciona con football-data y ClubElo, pero
+   Understat sirve una página sin datos a clientes que no parecen navegador.
+   `fetch_text` acepta ahora `headers` opcionales y el adaptador de Understat
+   se presenta con cabeceras de navegador (los datos son públicos y el acceso
+   es mínimo: 1 página por temporada, cacheada, mismo patrón que las librerías
+   públicas de scraping de Understat).
+2. **Auto-recuperación de cache envenenada**: si el HTML cacheado de Understat
+   no parsea (p. ej. una página de bloqueo guardada por una ejecución
+   anterior), la ingesta lo re-descarga UNA vez antes de fallar, en lugar de
+   exigir borrado manual de `data/raw/understat/`.

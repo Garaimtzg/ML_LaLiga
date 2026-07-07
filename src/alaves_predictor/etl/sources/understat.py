@@ -28,6 +28,20 @@ from alaves_predictor.etl.errors import SourceFormatError
 
 SOURCE_NAME = "understat"
 
+# Understat sirve una página sin datos (shell/bloqueo) a clientes cuyo
+# User-Agent no parece un navegador, así que este adaptador se presenta como
+# tal. Los datos son públicos y el acceso es mínimo (1 página por temporada,
+# cacheada, con rate limit de 3 s): mismo patrón que las librerías públicas
+# de scraping de Understat.
+BROWSER_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+}
+
 # La página de liga usa datesData; matchesData se mantiene como fallback.
 _MATCHES_DATA_RE = re.compile(
     r"var\s+(?:datesData|matchesData)\s*=\s*JSON\.parse\('(.*?)'\)", re.DOTALL
