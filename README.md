@@ -38,7 +38,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (41 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (43 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
@@ -149,7 +149,7 @@ Identificadores legibles: `team_id = "alaves"`,
 │           ├── fbref.py
 │           ├── understat.py          # en pausa (ADR-008)
 │           └── clubelo.py
-└── tests/                            # 41 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 43 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)
@@ -165,6 +165,7 @@ Identificadores legibles: `team_id = "alaves"`,
 | [007](docs/decisions/007-ingesta-en-local-por-restriccion-de-red.md) | La ingesta real se ejecuta en local (WSL); tests con fixtures sin red |
 | [008](docs/decisions/008-xg-de-fbref-en-vez-de-understat.md) | xG desde FBref (+ jornada oficial); Understat en pausa tras su rediseño de dic-2025 |
 | [009](docs/decisions/009-transporte-tls-curl-cffi-para-fbref.md) | curl_cffi (huella TLS de Chrome) solo para FBref, cuyo Cloudflare rechaza clientes Python |
+| [010](docs/decisions/010-fallback-wayback-machine-para-fbref.md) | Cascada de descarga de FBref: cache → directo → Wayback Machine → snapshot manual |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 

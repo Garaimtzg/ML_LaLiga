@@ -121,6 +121,61 @@ def test_cache_envenenada_de_fbref_se_redescarga_sola(
         conn.close()
 
 
+def test_fbref_bloqueado_cae_a_wayback(mini_settings, fake_fetch, monkeypatch) -> None:
+    """Si FBref directo devuelve 403, el xG se obtiene del snapshot de la Wayback
+    Machine (ADR-010), con aviso en el informe y procedencia 'fbref-wayback'."""
+    from pathlib import Path
+
+    import alaves_predictor.etl.ingest as ingest_mod
+    from alaves_predictor.etl.errors import SourceDownloadError
+
+    FIXTURES = Path(__file__).parent / "fixtures"
+    original = fake_fetch
+
+    def fbref_bloqueado(url, cache_path, **kwargs):
+        if "fbref.test" in url and "web.archive.org" not in url:
+            raise SourceDownloadError(f"HTTP 403 al descargar {url}: bloqueo anti-bot.")
+        if "web.archive.org" in url:
+            assert "id_/" in url  # snapshot sin la barra de wayback
+            return (FIXTURES / "fbref_schedule_mini.html").read_text()
+        return original(url, cache_path, **kwargs)
+
+    monkeypatch.setattr(ingest_mod, "fetch_text", fbref_bloqueado)
+    conn = db.connect(mini_settings.data.db_path)
+    try:
+        report = ingest_historical(conn, mini_settings)
+        assert report.xg_matched_by_season == {"2018-19": 12}
+        assert any("Wayback" in w for w in report.warnings)
+        source = conn.execute(
+            "SELECT source FROM match_stats WHERE xg IS NOT NULL LIMIT 1"
+        ).fetchone()["source"]
+        assert "fbref-wayback" in source
+    finally:
+        conn.close()
+
+
+def test_fbref_y_wayback_bloqueados_explica_snapshot_manual(
+    mini_settings, fake_fetch, monkeypatch
+) -> None:
+    import alaves_predictor.etl.ingest as ingest_mod
+    from alaves_predictor.etl.errors import SourceDownloadError
+
+    original = fake_fetch
+
+    def todo_bloqueado(url, cache_path, **kwargs):
+        if "fbref.test" in url or "web.archive.org" in url:
+            raise SourceDownloadError(f"HTTP 403 al descargar {url}: bloqueo.")
+        return original(url, cache_path, **kwargs)
+
+    monkeypatch.setattr(ingest_mod, "fetch_text", todo_bloqueado)
+    conn = db.connect(mini_settings.data.db_path)
+    try:
+        with pytest.raises(SourceDownloadError, match="navegador"):
+            ingest_historical(conn, mini_settings)
+    finally:
+        conn.close()
+
+
 def test_validacion_detecta_bd_incompleta(mini_settings, fake_fetch) -> None:
     conn = db.connect(mini_settings.data.db_path)
     try:

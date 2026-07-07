@@ -86,6 +86,12 @@ def test_fbref_season_slug_y_url() -> None:
     assert fbref.schedule_url("2018-19", cfg) == (
         "https://fbref.com/en/comps/12/2018-2019/schedule/2018-2019-La-Liga-Scores-and-Fixtures"
     )
+    # Snapshot de Wayback: agosto posterior al fin de temporada, HTML original (id_)
+    assert fbref.wayback_url("2018-19", cfg) == (
+        "https://web.archive.org/web/20190801000000id_/"
+        "https://fbref.com/en/comps/12/2018-2019/schedule/"
+        "2018-2019-La-Liga-Scores-and-Fixtures"
+    )
 
 
 # --- Understat (EN PAUSA, ADR-008: el parser se conserva para el formato antiguo) ---

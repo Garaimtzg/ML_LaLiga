@@ -57,6 +57,20 @@ def schedule_url(season: str, cfg: FBrefConfig) -> str:
     )
 
 
+def wayback_url(season: str, cfg: FBrefConfig) -> str:
+    """URL del snapshot de la Wayback Machine para una temporada (ADR-010).
+
+    El sufijo `id_` en el timestamp pide el HTML original archivado, sin la
+    barra de herramientas que inyecta archive.org. Se pide el snapshot más
+    cercano al 1 de agosto posterior al fin de temporada, cuando la página ya
+    contiene la temporada completa; si el snapshot fuera anterior/incompleto,
+    la validación de cobertura de xG lo detectaría.
+    """
+    end_year = int(season.split("-")[0]) + 1
+    timestamp = f"{end_year}0801000000"
+    return f"{cfg.wayback_base}/{timestamp}id_/{schedule_url(season, cfg)}"
+
+
 def _row_cells(row: Tag) -> dict[str, str]:
     """Mapea data-stat -> texto de la celda para una fila de la tabla."""
     return {

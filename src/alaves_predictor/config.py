@@ -43,6 +43,9 @@ class FBrefConfig(BaseModel):
     competition_id: int = 12  # La Liga en FBref
     competition_slug: str = "La-Liga"
     rate_limit_seconds: float = 6.0
+    # Fallback para temporadas pasadas si FBref bloquea la descarga directa
+    # con un desafío JavaScript (ADR-010).
+    wayback_base: str = "https://web.archive.org/web"
 
 
 class UnderstatConfig(BaseModel):

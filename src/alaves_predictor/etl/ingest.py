@@ -23,7 +23,11 @@ from datetime import UTC, date, datetime
 
 from alaves_predictor.config import Settings
 from alaves_predictor.etl import db
-from alaves_predictor.etl.errors import SourceConsistencyError, SourceFormatError
+from alaves_predictor.etl.errors import (
+    SourceConsistencyError,
+    SourceDownloadError,
+    SourceFormatError,
+)
 from alaves_predictor.etl.http_cache import fetch_text
 from alaves_predictor.etl.sources import clubelo, fbref, football_data
 from alaves_predictor.etl.teams import TeamRegistry
@@ -202,6 +206,48 @@ def _upsert_match_stats(
     )
 
 
+def _fetch_fbref_schedule(
+    season: str, settings: Settings, *, force: bool = False
+) -> tuple[str, str]:
+    """Descarga el calendario de una temporada de FBref. Devuelve (html, fuente).
+
+    Orden de intentos (ADR-009/010):
+    1. Cache local (salvo force).
+    2. FBref directo con huella TLS de Chrome (curl_cffi).
+    3. Snapshot de la Wayback Machine (temporadas pasadas, datos estáticos).
+    Si todo falla, el error incluye cómo guardar el snapshot a mano en la cache.
+    """
+    cfg = settings.sources.fbref
+    url = fbref.schedule_url(season, cfg)
+    cache = settings.data.raw_dir / "fbref" / f"schedule_{fbref.season_slug(season)}.html"
+    try:
+        return (
+            fetch_text(
+                url,
+                cache,
+                rate_limit_seconds=cfg.rate_limit_seconds,
+                force=force,
+                impersonate=True,
+            ),
+            fbref.SOURCE_NAME,
+        )
+    except SourceDownloadError:
+        pass  # FBref bloquea (desafío JS de Cloudflare): probar el archivo histórico
+    wb_url = fbref.wayback_url(season, cfg)
+    try:
+        return (
+            fetch_text(wb_url, cache, rate_limit_seconds=cfg.rate_limit_seconds, force=force),
+            f"{fbref.SOURCE_NAME}-wayback",
+        )
+    except SourceDownloadError as exc:
+        raise SourceDownloadError(
+            f"No se pudo descargar el calendario de FBref de {season} ni directo ni vía "
+            f"Wayback Machine ({exc}). Alternativa manual: abre {url} en tu navegador, "
+            f"guarda la página como HTML (Ctrl+S, 'solo HTML') en '{cache}' y relanza "
+            "la ingesta: la leerá de la cache."
+        ) from exc
+
+
 def ingest_fbref_season(
     conn: sqlite3.Connection,
     season: str,
@@ -209,24 +255,15 @@ def ingest_fbref_season(
     registry: TeamRegistry,
     *,
     force: bool = False,
-) -> int:
+) -> tuple[int, str]:
     """Añade xG y jornada oficial de FBref a los partidos ya cargados.
 
-    Devuelve el nº de partidos cruzados con xG. La jornada oficial (columna Wk)
-    sobreescribe la aproximación por conteo de assign_matchdays (ADR-006/008).
+    Devuelve (nº de partidos cruzados con xG, fuente usada). La jornada oficial
+    (columna Wk) sobreescribe la aproximación por conteo (ADR-006/008).
     """
-    cfg = settings.sources.fbref
-    url = fbref.schedule_url(season, cfg)
     cache = settings.data.raw_dir / "fbref" / f"schedule_{fbref.season_slug(season)}.html"
     had_cache = cache.exists()
-    # FBref (Cloudflare) valida la huella TLS del cliente: curl_cffi (ADR-009).
-    text = fetch_text(
-        url,
-        cache,
-        rate_limit_seconds=cfg.rate_limit_seconds,
-        force=force,
-        impersonate=True,
-    )
+    text, via = _fetch_fbref_schedule(season, settings, force=force)
     try:
         fb_matches = fbref.parse_schedule(text)
     except SourceFormatError:
@@ -234,13 +271,7 @@ def ingest_fbref_season(
             raise
         # La cache puede contener una página de bloqueo/error de una descarga
         # antigua: se re-descarga UNA vez antes de rendirse.
-        text = fetch_text(
-            url,
-            cache,
-            rate_limit_seconds=cfg.rate_limit_seconds,
-            force=True,
-            impersonate=True,
-        )
+        text, via = _fetch_fbref_schedule(season, settings, force=True)
         fb_matches = fbref.parse_schedule(text)
     now = datetime.now(UTC).isoformat()
 
@@ -284,12 +315,12 @@ def ingest_fbref_season(
                     team_id=team_id,
                     is_home=is_home,
                     values={"xg": xg},
-                    source=fbref.SOURCE_NAME,
+                    source=via,  # "fbref" o "fbref-wayback" (procedencia real)
                     fetched_at=now,
                 )
             matched += 1
     conn.commit()
-    return matched
+    return matched, via
 
 
 def ingest_clubelo(
@@ -348,9 +379,14 @@ def ingest_historical(
         report.matches_by_season[season] = n_matches
         # Base aproximada por conteo; FBref la sobreescribe con la Wk oficial.
         assign_matchdays(conn, season)
-        n_xg = ingest_fbref_season(conn, season, settings, registry, force=force)
+        n_xg, via = ingest_fbref_season(conn, season, settings, registry, force=force)
         report.xg_matched_by_season[season] = n_xg
         conn.commit()
+        if via != fbref.SOURCE_NAME:
+            report.warnings.append(
+                f"{season}: FBref directo bloqueado; xG obtenido del snapshot de la "
+                "Wayback Machine (verificado contra football-data)."
+            )
         if n_xg < n_matches:
             report.warnings.append(
                 f"{season}: FBref solo cubre {n_xg}/{n_matches} partidos con xG."
