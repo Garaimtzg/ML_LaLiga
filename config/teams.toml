@@ -167,7 +167,7 @@ name = "Rayo Vallecano"
 football_data = "Vallecano"
 fbref = ["Rayo Vallecano", "Rayo"]
 understat = "Rayo Vallecano"
-clubelo = "Vallecano"
+clubelo = "RayoVallecano"
 
 [real-madrid]
 name = "Real Madrid"
