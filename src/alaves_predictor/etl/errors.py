@@ -21,16 +21,20 @@ class SourceDownloadError(ETLError):
 
 
 class UnknownTeamError(ETLError):
-    """Una fuente usa un nombre de equipo no registrado en config/teams.toml."""
+    """Una fuente usa nombres de equipo no registrados en config/teams.toml."""
 
-    def __init__(self, source: str, raw_name: str) -> None:
+    def __init__(self, source: str, raw_names: str | list[str], context: str = "") -> None:
+        names = [raw_names] if isinstance(raw_names, str) else list(raw_names)
+        listado = ", ".join(f"'{n}'" for n in names)
+        plural = "los nombres de equipo" if len(names) > 1 else "el nombre de equipo"
+        suffix = f" ({context})" if context else ""
         super().__init__(
-            f"La fuente '{source}' usa el nombre de equipo '{raw_name}', que no está "
-            f"registrado en config/teams.toml. Añade el alias en la clave '{source}' "
-            f"del equipo correspondiente y vuelve a lanzar la ingesta."
+            f"La fuente '{source}'{suffix} usa {plural} {listado}, no registrado(s) en "
+            f"config/teams.toml. Añade cada alias a la lista '{source}' del equipo "
+            f"correspondiente y vuelve a lanzar la ingesta."
         )
         self.source = source
-        self.raw_name = raw_name
+        self.raw_names = names
 
 
 class SourceConsistencyError(ETLError):

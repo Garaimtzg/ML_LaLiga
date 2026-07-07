@@ -24,8 +24,13 @@ class TeamRegistry:
         self._by_source: dict[str, dict[str, str]] = {}
         for source in ("football_data", "fbref", "understat", "clubelo"):
             self._by_source[source] = {
-                getattr(cfg, source): team_id for team_id, cfg in teams.items()
+                alias: team_id
+                for team_id, cfg in teams.items()
+                for alias in cfg.aliases_for(source)
             }
+
+    def knows(self, source: str, raw_name: str) -> bool:
+        return raw_name.strip() in self._by_source[source]
 
     def resolve(self, source: str, raw_name: str) -> str:
         """Devuelve el team_id canónico para un nombre tal como lo escribe la fuente."""
@@ -35,8 +40,8 @@ class TeamRegistry:
         return team_id
 
     def alias(self, team_id: str, source: str) -> str:
-        """Alias de un equipo en una fuente (p. ej. para construir URLs de ClubElo)."""
-        return getattr(self._teams[team_id], source)
+        """Alias principal de un equipo en una fuente (p. ej. URLs de ClubElo)."""
+        return self._teams[team_id].aliases_for(source)[0]
 
     @property
     def team_ids(self) -> list[str]:

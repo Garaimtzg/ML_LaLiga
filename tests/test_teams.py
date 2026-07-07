@@ -20,6 +20,28 @@ def test_resuelve_alias_por_fuente() -> None:
     assert registry.resolve("football_data", "Alaves") == "alaves"
 
 
+def test_multiples_alias_por_fuente_resuelven_al_mismo_equipo() -> None:
+    """FBref cambió de nomenclatura con los años: todos los alias de la lista valen."""
+    from alaves_predictor.config import TeamConfig
+
+    teams = {
+        "betis": TeamConfig(
+            name="Real Betis",
+            football_data="Betis",
+            fbref=["Betis", "Real Betis"],
+            understat="Real Betis",
+            clubelo="Betis",
+        )
+    }
+    registry = TeamRegistry(teams)
+    assert registry.resolve("fbref", "Betis") == "betis"
+    assert registry.resolve("fbref", "Real Betis") == "betis"
+    assert registry.knows("fbref", "Betis") and registry.knows("fbref", "Real Betis")
+    assert not registry.knows("fbref", "Betis B")
+    # el alias principal (para URLs) es el primero de la lista
+    assert registry.alias("betis", "fbref") == "Betis"
+
+
 def test_nombre_desconocido_falla_con_mensaje_util() -> None:
     registry = TeamRegistry(MINI_TEAMS)
     with pytest.raises(UnknownTeamError) as exc_info:

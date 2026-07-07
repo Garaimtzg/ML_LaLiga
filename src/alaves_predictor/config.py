@@ -67,13 +67,23 @@ class SourcesConfig(BaseModel):
 
 
 class TeamConfig(BaseModel):
-    """Nombre canónico de un equipo y sus alias en cada fuente."""
+    """Nombre canónico de un equipo y sus alias en cada fuente.
+
+    Cada fuente admite un alias o una lista de alias: FBref, por ejemplo, ha
+    cambiado su nomenclatura con los años ("Real Betis" en páginas antiguas,
+    "Betis" en las modernas) y los snapshots de la Wayback Machine mezclan
+    épocas (ADR-010).
+    """
 
     name: str
-    football_data: str
-    fbref: str
-    understat: str
-    clubelo: str
+    football_data: str | list[str]
+    fbref: str | list[str]
+    understat: str | list[str]
+    clubelo: str | list[str]
+
+    def aliases_for(self, source: str) -> list[str]:
+        value = getattr(self, source)
+        return [value] if isinstance(value, str) else list(value)
 
 
 class Settings(BaseModel):

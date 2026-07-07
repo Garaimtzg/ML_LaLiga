@@ -121,6 +121,34 @@ def test_cache_envenenada_de_fbref_se_redescarga_sola(
         conn.close()
 
 
+def test_fbref_reporta_todos_los_nombres_desconocidos_de_una_vez(
+    mini_settings, fake_fetch, monkeypatch
+) -> None:
+    """Un solo error con la lista completa de alias que faltan, no uno por ejecución."""
+    import alaves_predictor.etl.ingest as ingest_mod
+    from alaves_predictor.etl.errors import UnknownTeamError
+
+    original = fake_fetch
+
+    def nombres_antiguos(url, cache_path, **kwargs):
+        text = original(url, cache_path, **kwargs)
+        if "fbref.test" in url:
+            # simula un snapshot de otra época con dos nomenclaturas desconocidas
+            return text.replace(">Real Sociedad<", ">Erreala<").replace(">Getafe<", ">Getafe CF<")
+        return text
+
+    monkeypatch.setattr(ingest_mod, "fetch_text", nombres_antiguos)
+    conn = db.connect(mini_settings.data.db_path)
+    try:
+        with pytest.raises(UnknownTeamError) as exc_info:
+            ingest_historical(conn, mini_settings)
+        message = str(exc_info.value)
+        assert "'Erreala'" in message and "'Getafe CF'" in message
+        assert "2018-19" in message
+    finally:
+        conn.close()
+
+
 def test_fbref_bloqueado_cae_a_wayback(mini_settings, fake_fetch, monkeypatch) -> None:
     """Si FBref directo devuelve 403, el xG se obtiene del snapshot de la Wayback
     Machine (ADR-010), con aviso en el informe y procedencia 'fbref-wayback'."""

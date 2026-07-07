@@ -27,6 +27,7 @@ from alaves_predictor.etl.errors import (
     SourceConsistencyError,
     SourceDownloadError,
     SourceFormatError,
+    UnknownTeamError,
 )
 from alaves_predictor.etl.http_cache import fetch_text
 from alaves_predictor.etl.sources import clubelo, fbref, football_data
@@ -274,6 +275,20 @@ def ingest_fbref_season(
         text, via = _fetch_fbref_schedule(season, settings, force=True)
         fb_matches = fbref.parse_schedule(text)
     now = datetime.now(UTC).isoformat()
+
+    # Los snapshots de FBref mezclan épocas con nomenclaturas distintas
+    # ("Betis"/"Real Betis"): se recopilan TODOS los nombres desconocidos de la
+    # página y se reportan de una vez, no uno por ejecución.
+    unknown = sorted(
+        {
+            name
+            for m in fb_matches
+            for name in (m.home_team, m.away_team)
+            if not registry.knows("fbref", name)
+        }
+    )
+    if unknown:
+        raise UnknownTeamError("fbref", unknown, context=f"temporada {season}")
 
     matched = 0
     for m in fb_matches:
