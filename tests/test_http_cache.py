@@ -17,6 +17,12 @@ def _fake_get(status_code: int, text: str = "contenido"):
     return fake
 
 
+class _FakeCurlResponse:
+    def __init__(self, status_code: int, text: str) -> None:
+        self.status_code = status_code
+        self.content = text.encode("utf-8")
+
+
 def test_cache_evita_la_red(tmp_path: Path, monkeypatch) -> None:
     cache = tmp_path / "f.txt"
     cache.write_text("cacheado")
@@ -33,6 +39,37 @@ def test_descarga_correcta_persiste_en_cache(tmp_path: Path, monkeypatch) -> Non
     cache = tmp_path / "sub" / "f.txt"
     assert fetch_text("https://x.test/f", cache, rate_limit_seconds=0.0) == "datos"
     assert cache.read_text() == "datos"
+
+
+def test_impersonate_usa_curl_cffi(tmp_path: Path, monkeypatch) -> None:
+    """Con impersonate=True la descarga va por curl_cffi con huella de Chrome (ADR-009)."""
+    seen = {}
+
+    def fake_cf_get(url, **kwargs):
+        seen["impersonate"] = kwargs.get("impersonate")
+        return _FakeCurlResponse(200, "datos fbref")
+
+    def httpx_prohibido(*args, **kwargs):
+        raise AssertionError("con impersonate=True no debe usarse httpx")
+
+    monkeypatch.setattr("alaves_predictor.etl.http_cache.cf_requests.get", fake_cf_get)
+    monkeypatch.setattr(httpx, "get", httpx_prohibido)
+    cache = tmp_path / "f.html"
+    text = fetch_text("https://x.test/f", cache, rate_limit_seconds=0.0, impersonate=True)
+    assert text == "datos fbref"
+    assert seen["impersonate"] == "chrome"
+    assert cache.read_text() == "datos fbref"
+
+
+def test_impersonate_403_da_mensaje_claro(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "alaves_predictor.etl.http_cache.cf_requests.get",
+        lambda url, **kwargs: _FakeCurlResponse(403, "blocked"),
+    )
+    with pytest.raises(SourceDownloadError, match="anti-bot"):
+        fetch_text(
+            "https://x.test/f", tmp_path / "f.html", rate_limit_seconds=0.0, impersonate=True
+        )
 
 
 @pytest.mark.parametrize(("status", "pista"), [(403, "anti-bot"), (429, "rate limit")])
