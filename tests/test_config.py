@@ -22,9 +22,11 @@ def test_settings_reales_cargan() -> None:
 
 def test_equipos_cubren_todas_las_fuentes() -> None:
     settings = load_settings(CONFIG_DIR)
-    # 28 clubes distintos jugaron LaLiga entre 2018-19 y 2025-26
-    assert len(settings.teams) == 28
+    # 28 clubes del histórico 2018-26 + ascendidos a la 2026-27
+    assert len(settings.teams) >= 30
     assert settings.focus_team in settings.teams
+    assert "racing-santander" in settings.teams
+    assert "deportivo-la-coruna" in settings.teams
     for team_id, cfg in settings.teams.items():
         assert cfg.name, team_id
         for source in ("football_data", "fbref", "understat", "clubelo"):

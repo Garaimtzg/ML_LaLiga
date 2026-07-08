@@ -81,13 +81,35 @@ def test_http_error_da_mensaje_claro(tmp_path: Path, monkeypatch, status, pista)
     assert not (tmp_path / "f.txt").exists()  # nada corrupto en cache
 
 
-def test_fallo_de_red_da_mensaje_claro(tmp_path: Path, monkeypatch) -> None:
+def test_fallo_de_red_reintenta_y_da_mensaje_claro(tmp_path: Path, monkeypatch) -> None:
+    calls = {"n": 0}
+
     def timeout(url, **kwargs):
+        calls["n"] += 1
         raise httpx.ConnectTimeout("timeout")
 
     monkeypatch.setattr(httpx, "get", timeout)
-    with pytest.raises(SourceDownloadError, match="Fallo de red"):
+    monkeypatch.setattr("alaves_predictor.etl.http_cache._RETRY_BACKOFF_S", 0.0)
+    with pytest.raises(SourceDownloadError, match="tras 3 intentos"):
         fetch_text("https://x.test/f", tmp_path / "f.txt", rate_limit_seconds=0.0)
+    assert calls["n"] == 3
+
+
+def test_fallo_transitorio_se_recupera_al_reintentar(tmp_path: Path, monkeypatch) -> None:
+    """Un timeout puntual (ClubElo lento) no debe tumbar la ingesta entera."""
+    calls = {"n": 0}
+
+    def flaky(url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise httpx.ConnectTimeout("timeout")
+        return httpx.Response(200, text="datos", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", flaky)
+    monkeypatch.setattr("alaves_predictor.etl.http_cache._RETRY_BACKOFF_S", 0.0)
+    text = fetch_text("https://x.test/f", tmp_path / "f.txt", rate_limit_seconds=0.0)
+    assert text == "datos"
+    assert calls["n"] == 3
 
 
 def test_respuesta_vacia_falla(tmp_path: Path, monkeypatch) -> None:

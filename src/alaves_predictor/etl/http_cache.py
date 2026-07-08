@@ -50,21 +50,32 @@ _STATUS_HINTS = {
 }
 
 
+# Reintentos ante fallos transitorios de red (timeouts, cortes de conexión):
+# api.clubelo.com, p. ej., responde lento a veces. Backoff: 2 s, 4 s.
+_TIMEOUT_S = 60.0
+_RETRY_ATTEMPTS = 3
+_RETRY_BACKOFF_S = 2.0
+
+
 def _download(url: str, headers: dict[str, str] | None, impersonate: bool) -> tuple[int, bytes]:
-    """Descarga cruda con el transporte que toque. Devuelve (status_code, body)."""
-    if impersonate:
+    """Descarga cruda con el transporte que toque, con reintentos ante fallos de red."""
+    last_error: Exception | None = None
+    for attempt in range(1, _RETRY_ATTEMPTS + 1):
         try:
-            response = cf_requests.get(url, impersonate="chrome", timeout=30.0)
-        except CurlError as exc:
-            raise SourceDownloadError(f"Fallo de red descargando {url}: {exc}") from exc
-        return response.status_code, response.content
-    try:
-        http_response = httpx.get(
-            url, headers=headers or _HEADERS, timeout=30.0, follow_redirects=True
-        )
-    except httpx.HTTPError as exc:
-        raise SourceDownloadError(f"Fallo de red descargando {url}: {exc}") from exc
-    return http_response.status_code, http_response.content
+            if impersonate:
+                response = cf_requests.get(url, impersonate="chrome", timeout=_TIMEOUT_S)
+                return response.status_code, response.content
+            http_response = httpx.get(
+                url, headers=headers or _HEADERS, timeout=_TIMEOUT_S, follow_redirects=True
+            )
+            return http_response.status_code, http_response.content
+        except (httpx.HTTPError, CurlError) as exc:
+            last_error = exc
+            if attempt < _RETRY_ATTEMPTS:
+                time.sleep(_RETRY_BACKOFF_S * attempt)
+    raise SourceDownloadError(
+        f"Fallo de red descargando {url} tras {_RETRY_ATTEMPTS} intentos: {last_error}"
+    ) from last_error
 
 
 def fetch_text(

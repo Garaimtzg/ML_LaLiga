@@ -13,7 +13,8 @@
 #
 # Si una fuente usa un nombre no registrado aquí, la ingesta falla ruidosamente
 # indicando el nombre desconocido y este archivo como lugar donde corregirlo.
-# Cobertura: los 28 clubes que han jugado LaLiga entre 2018-19 y 2025-26.
+# Cobertura: los 28 clubes que han jugado LaLiga entre 2018-19 y 2025-26,
+# más los ascendidos a la 2026-27 (al final del archivo).
 
 [alaves]
 name = "Deportivo Alavés"
@@ -210,3 +211,21 @@ football_data = "Villarreal"
 fbref = ["Villarreal", "Villarreal CF"]
 understat = "Villarreal"
 clubelo = "Villarreal"
+
+# --- Ascendidos a LaLiga 2026-27 (sin partidos en el histórico 2018-26 de
+# Primera; se incluyen para que su Elo y su registro existan desde ya y la
+# F7 los tenga disponibles) ---
+
+[racing-santander]
+name = "Real Racing Club"
+football_data = "Santander"
+fbref = ["Racing Santander", "Racing Sant", "Racing de Santander"]
+understat = "Racing Santander"
+clubelo = "Santander"
+
+[deportivo-la-coruna]
+name = "Deportivo de La Coruña"
+football_data = "La Coruna"
+fbref = ["La Coruña", "Deportivo La Coruña", "Dep La Coruña"]
+understat = "Deportivo La Coruna"
+clubelo = "LaCoruna"
