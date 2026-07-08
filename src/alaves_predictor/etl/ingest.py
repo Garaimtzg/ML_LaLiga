@@ -207,46 +207,90 @@ def _upsert_match_stats(
     )
 
 
+def _has_xg(matches: list[fbref.FBrefMatch]) -> bool:
+    return any(m.home_xg is not None for m in matches)
+
+
 def _fetch_fbref_schedule(
     season: str, settings: Settings, *, force: bool = False
-) -> tuple[str, str]:
-    """Descarga el calendario de una temporada de FBref. Devuelve (html, fuente).
+) -> tuple[list[fbref.FBrefMatch], str]:
+    """Resuelve el calendario de una temporada de FBref. Devuelve (partidos, fuente).
 
     Orden de intentos (ADR-009/010):
-    1. Cache local (salvo force).
+    1. Cache local (salvo force) — solo si parsea Y tiene xG; una cache con
+       marcadores pero sin xG (snapshot capturado en mal momento) se descarta
+       y se re-resuelve sola.
     2. FBref directo con huella TLS de Chrome (curl_cffi).
-    3. Snapshot de la Wayback Machine (temporadas pasadas, datos estáticos).
+    3. Snapshots de la Wayback Machine: se listan con la API CDX y se prueban
+       del más reciente hacia atrás hasta encontrar uno con xG.
     Si todo falla, el error incluye cómo guardar el snapshot a mano en la cache.
     """
     cfg = settings.sources.fbref
     url = fbref.schedule_url(season, cfg)
     cache = settings.data.raw_dir / "fbref" / f"schedule_{fbref.season_slug(season)}.html"
+
+    # 1. Cache local
+    if cache.exists() and not force:
+        try:
+            matches = fbref.parse_schedule(cache.read_text(encoding="utf-8"))
+            if _has_xg(matches):
+                return matches, fbref.SOURCE_NAME
+        except SourceFormatError:
+            pass  # cache envenenada (página de bloqueo): re-resolver
+
+    # 2. FBref directo (fuente primaria; imprescindible en F7 para la temporada en curso)
     try:
-        return (
-            fetch_text(
-                url,
+        text = fetch_text(
+            url, cache, rate_limit_seconds=cfg.rate_limit_seconds, force=True, impersonate=True
+        )
+        return fbref.parse_schedule(text), fbref.SOURCE_NAME
+    except (SourceDownloadError, SourceFormatError):
+        pass  # bloqueado o página sin datos: probar el archivo histórico
+
+    # 3. Wayback Machine: candidatos del índice CDX, más recientes primero
+    try:
+        cdx_cache = settings.data.raw_dir / "fbref" / f"cdx_{fbref.season_slug(season)}.txt"
+        cdx_text = fetch_text(
+            fbref.cdx_url(season, cfg),
+            cdx_cache,
+            rate_limit_seconds=cfg.rate_limit_seconds,
+            force=force,
+        )
+        candidates = fbref.parse_cdx_timestamps(cdx_text)
+    except (SourceDownloadError, SourceFormatError):
+        candidates = []
+    if not candidates:
+        candidates = [fbref.default_wayback_timestamp(season)]
+
+    last_error: Exception | None = None
+    best_without_xg: list[fbref.FBrefMatch] | None = None
+    for timestamp in candidates[:8]:  # acotado: 8 intentos como mucho
+        try:
+            text = fetch_text(
+                fbref.snapshot_url(timestamp, season, cfg),
                 cache,
                 rate_limit_seconds=cfg.rate_limit_seconds,
-                force=force,
-                impersonate=True,
-            ),
-            fbref.SOURCE_NAME,
-        )
-    except SourceDownloadError:
-        pass  # FBref bloquea (desafío JS de Cloudflare): probar el archivo histórico
-    wb_url = fbref.wayback_url(season, cfg)
-    try:
-        return (
-            fetch_text(wb_url, cache, rate_limit_seconds=cfg.rate_limit_seconds, force=force),
-            f"{fbref.SOURCE_NAME}-wayback",
-        )
-    except SourceDownloadError as exc:
-        raise SourceDownloadError(
-            f"No se pudo descargar el calendario de FBref de {season} ni directo ni vía "
-            f"Wayback Machine ({exc}). Alternativa manual: abre {url} en tu navegador, "
-            f"guarda la página como HTML (Ctrl+S, 'solo HTML') en '{cache}' y relanza "
-            "la ingesta: la leerá de la cache."
-        ) from exc
+                force=True,
+            )
+            matches = fbref.parse_schedule(text)
+        except (SourceDownloadError, SourceFormatError) as exc:
+            last_error = exc
+            continue
+        if _has_xg(matches):
+            return matches, f"{fbref.SOURCE_NAME}-wayback"
+        best_without_xg = best_without_xg or matches
+
+    detail = (
+        "los snapshots archivados de esa temporada no contienen xG"
+        if best_without_xg is not None
+        else f"último error: {last_error}"
+    )
+    raise SourceDownloadError(
+        f"No se pudo obtener el calendario de FBref de {season} con xG ni directo ni vía "
+        f"Wayback Machine ({detail}). Alternativa manual: abre {url} en tu navegador, "
+        f"guarda la página como HTML (Ctrl+S, 'solo HTML') en '{cache}' y relanza la "
+        "ingesta: la leerá de la cache."
+    )
 
 
 def ingest_fbref_season(
@@ -262,18 +306,7 @@ def ingest_fbref_season(
     Devuelve (nº de partidos cruzados con xG, fuente usada). La jornada oficial
     (columna Wk) sobreescribe la aproximación por conteo (ADR-006/008).
     """
-    cache = settings.data.raw_dir / "fbref" / f"schedule_{fbref.season_slug(season)}.html"
-    had_cache = cache.exists()
-    text, via = _fetch_fbref_schedule(season, settings, force=force)
-    try:
-        fb_matches = fbref.parse_schedule(text)
-    except SourceFormatError:
-        if not (had_cache and not force):
-            raise
-        # La cache puede contener una página de bloqueo/error de una descarga
-        # antigua: se re-descarga UNA vez antes de rendirse.
-        text, via = _fetch_fbref_schedule(season, settings, force=True)
-        fb_matches = fbref.parse_schedule(text)
+    fb_matches, via = _fetch_fbref_schedule(season, settings, force=force)
     now = datetime.now(UTC).isoformat()
 
     # Los snapshots de FBref mezclan épocas con nomenclaturas distintas

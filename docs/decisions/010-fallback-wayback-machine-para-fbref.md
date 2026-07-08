@@ -33,10 +33,16 @@ Opción 3, implementada en `_fetch_fbref_schedule`:
    primero; lo que entre una vez, no se vuelve a pedir.
 2. **FBref directo** con curl_cffi: si algún día vuelve a funcionar, es la
    fuente primaria (necesaria en F7 para la temporada en curso).
-3. **Wayback Machine**: `https://web.archive.org/web/<ts>id_/<url>` con
-   timestamp = 1 de agosto posterior al fin de temporada (página completa) y
-   sufijo `id_` (HTML original sin la barra de wayback). archive.org existe
-   para esto y no bloquea bots respetuosos.
+3. **Wayback Machine**: los snapshots disponibles se listan con la **API CDX**
+   de archive.org y se prueban del más reciente hacia atrás (máx. 8) hasta
+   encontrar uno **con xG**; sufijo `id_` para el HTML original sin la barra
+   de wayback. archive.org existe para esto y no bloquea bots respetuosos.
+
+   *Refinamiento (mismo día)*: el snapshot único fijo (1 de agosto posterior
+   al fin de temporada) resultó insuficiente — el de la 2025-26 tenía los 380
+   marcadores pero las celdas de xG vacías (captura en mal momento). De ahí el
+   barrido por CDX con verificación de xG; además, una cache local que parsea
+   pero no contiene xG se descarta y se re-resuelve sola.
 4. Si todo falla, el error explica el **snapshot manual**: abrir la URL en el
    navegador (que sí pasa el desafío) y guardar el HTML en la ruta de cache.
 

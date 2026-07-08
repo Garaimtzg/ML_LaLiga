@@ -47,7 +47,7 @@ cd ~ && mkdir -p proyectos && cd proyectos
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (46 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (47 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
@@ -158,7 +158,7 @@ Identificadores legibles: `team_id = "alaves"`,
 │           ├── fbref.py
 │           ├── understat.py          # en pausa (ADR-008)
 │           └── clubelo.py
-└── tests/                            # 46 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 47 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)

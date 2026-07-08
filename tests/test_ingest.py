@@ -104,19 +104,20 @@ def test_cache_envenenada_de_fbref_se_redescarga_sola(
     poisoned.parent.mkdir(parents=True, exist_ok=True)
     poisoned.write_text("<html><body>Checking your browser...</body></html>")
 
-    def poisoned_then_ok(url, cache_path, **kwargs):
+    def contar_descargas(url, cache_path, **kwargs):
         if "fbref.test" in url:
             calls["fbref"] += 1
-            if not kwargs.get("force"):
-                return cache_path.read_text()  # 1ª llamada: lee la cache envenenada
+            # la cache envenenada nunca se sirve por red: el orquestador la
+            # descarta al parsearla y pide la página real con force=True
+            assert kwargs.get("force") is True
         return original(url, cache_path, **kwargs)
 
-    monkeypatch.setattr(ingest_mod, "fetch_text", poisoned_then_ok)
+    monkeypatch.setattr(ingest_mod, "fetch_text", contar_descargas)
     conn = db.connect(mini_settings.data.db_path)
     try:
         report = ingest_historical(conn, mini_settings)
         assert report.xg_matched_by_season == {"2018-19": 12}
-        assert calls["fbref"] == 2
+        assert calls["fbref"] == 1  # una sola re-descarga directa basta
     finally:
         conn.close()
 
@@ -163,8 +164,11 @@ def test_fbref_bloqueado_cae_a_wayback(mini_settings, fake_fetch, monkeypatch) -
     def fbref_bloqueado(url, cache_path, **kwargs):
         if "fbref.test" in url and "web.archive.org" not in url:
             raise SourceDownloadError(f"HTTP 403 al descargar {url}: bloqueo anti-bot.")
+        if "cdx/search" in url:
+            return "20260701123456\n20260101123456\n"  # índice de snapshots
         if "web.archive.org" in url:
             assert "id_/" in url  # snapshot sin la barra de wayback
+            assert "20260701123456" in url  # se prueba primero el más reciente
             return (FIXTURES / "fbref_schedule_mini.html").read_text()
         return original(url, cache_path, **kwargs)
 
@@ -178,6 +182,47 @@ def test_fbref_bloqueado_cae_a_wayback(mini_settings, fake_fetch, monkeypatch) -
             "SELECT source FROM match_stats WHERE xg IS NOT NULL LIMIT 1"
         ).fetchone()["source"]
         assert "fbref-wayback" in source
+    finally:
+        conn.close()
+
+
+def test_cache_sin_xg_se_reresuelve_con_otro_snapshot(
+    mini_settings, fake_fetch, monkeypatch
+) -> None:
+    """Una cache con marcadores pero sin xG (snapshot capturado en mal momento)
+    se descarta y se busca un snapshot con xG vía el índice CDX."""
+    import re
+    from pathlib import Path
+
+    import alaves_predictor.etl.ingest as ingest_mod
+    from alaves_predictor.etl.errors import SourceDownloadError
+
+    fixtures = Path(__file__).parent / "fixtures"
+    good_html = (fixtures / "fbref_schedule_mini.html").read_text()
+    # mismo calendario, celdas de xG vaciadas
+    no_xg_html = re.sub(r'(data-stat="(?:home|away)_xg">)[0-9.]+', r"\1", good_html)
+
+    cache = mini_settings.data.raw_dir / "fbref" / "schedule_2018-2019.html"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(no_xg_html)
+
+    original = fake_fetch
+
+    def directo_bloqueado(url, cache_path, **kwargs):
+        if "fbref.test" in url and "web.archive.org" not in url:
+            raise SourceDownloadError(f"HTTP 403 al descargar {url}: bloqueo.")
+        if "cdx/search" in url:
+            return "20260701123456\n"
+        if "web.archive.org" in url:
+            return good_html
+        return original(url, cache_path, **kwargs)
+
+    monkeypatch.setattr(ingest_mod, "fetch_text", directo_bloqueado)
+    conn = db.connect(mini_settings.data.db_path)
+    try:
+        report = ingest_historical(conn, mini_settings)
+        assert report.xg_matched_by_season == {"2018-19": 12}
+        assert any("Wayback" in w for w in report.warnings)
     finally:
         conn.close()
 

@@ -46,6 +46,7 @@ class FBrefConfig(BaseModel):
     # Fallback para temporadas pasadas si FBref bloquea la descarga directa
     # con un desafío JavaScript (ADR-010).
     wayback_base: str = "https://web.archive.org/web"
+    wayback_cdx_base: str = "https://web.archive.org/cdx/search/cdx"
 
 
 class UnderstatConfig(BaseModel):

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from urllib.parse import quote
 
 from bs4 import BeautifulSoup, Tag
 from pydantic import BaseModel, ValidationError
@@ -57,18 +58,44 @@ def schedule_url(season: str, cfg: FBrefConfig) -> str:
     )
 
 
-def wayback_url(season: str, cfg: FBrefConfig) -> str:
-    """URL del snapshot de la Wayback Machine para una temporada (ADR-010).
+def default_wayback_timestamp(season: str) -> str:
+    """Timestamp por defecto: 1 de agosto posterior al fin de temporada."""
+    end_year = int(season.split("-")[0]) + 1
+    return f"{end_year}0801000000"
+
+
+def snapshot_url(timestamp: str, season: str, cfg: FBrefConfig) -> str:
+    """URL de un snapshot concreto de la Wayback Machine (ADR-010).
 
     El sufijo `id_` en el timestamp pide el HTML original archivado, sin la
-    barra de herramientas que inyecta archive.org. Se pide el snapshot más
-    cercano al 1 de agosto posterior al fin de temporada, cuando la página ya
-    contiene la temporada completa; si el snapshot fuera anterior/incompleto,
-    la validación de cobertura de xG lo detectaría.
+    barra de herramientas que inyecta archive.org.
     """
-    end_year = int(season.split("-")[0]) + 1
-    timestamp = f"{end_year}0801000000"
     return f"{cfg.wayback_base}/{timestamp}id_/{schedule_url(season, cfg)}"
+
+
+def wayback_url(season: str, cfg: FBrefConfig) -> str:
+    """Snapshot por defecto (fallback cuando la API CDX no está disponible)."""
+    return snapshot_url(default_wayback_timestamp(season), season, cfg)
+
+
+def cdx_url(season: str, cfg: FBrefConfig) -> str:
+    """URL de la API CDX de archive.org: lista los snapshots archivados de la página.
+
+    No todos los snapshots sirven (uno puede tener los marcadores pero las
+    celdas de xG vacías, según el momento de la captura): la ingesta los
+    prueba del más reciente hacia atrás hasta encontrar uno con xG.
+    """
+    target = quote(schedule_url(season, cfg), safe="")
+    return (
+        f"{cfg.wayback_cdx_base}?url={target}&output=text&fl=timestamp"
+        "&filter=statuscode:200&collapse=digest&limit=200"
+    )
+
+
+def parse_cdx_timestamps(text: str) -> list[str]:
+    """Timestamps (YYYYMMDDhhmmss) del listado CDX, del más reciente al más antiguo."""
+    stamps = {line.strip() for line in text.splitlines() if re.fullmatch(r"\d{14}", line.strip())}
+    return sorted(stamps, reverse=True)
 
 
 def _row_cells(row: Tag) -> dict[str, str]:
