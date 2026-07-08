@@ -72,7 +72,7 @@ def ingest(
     typer.secho("Ingesta histórica completada.", fg=typer.colors.GREEN, bold=True)
     for season, n in report.matches_by_season.items():
         xg = report.xg_matched_by_season.get(season, 0)
-        typer.echo(f"  {season}: {n} partidos, {xg} con xG de FBref")
+        typer.echo(f"  {season}: {n} partidos, {xg} con xG")
     total_elo = sum(report.elo_rows_by_team.values())
     typer.echo(f"  Elo (ClubElo): {total_elo} filas para {len(report.elo_rows_by_team)} equipos")
     for warning in report.warnings:

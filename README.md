@@ -14,7 +14,7 @@ la clasificación final mediante simulación Monte Carlo.
 
 | Fase | Contenido | Estado |
 |------|-----------|--------|
-| **F1** | Setup del repo, entorno, ETL de datos históricos (2018-19 → 2025-26) | ✅ **Completada** (pipeline listo; ejecutar la ingesta en local, ver abajo) |
+| **F1** | Setup del repo, entorno, ETL de datos históricos (2018-19 → 2025-26) | ✅ **Completada** — BD poblada y validada: 3.040 partidos, xG completo, 11.209 líneas de cuotas, 25.306 registros Elo de 30 clubes |
 | F2 | Feature engineering + baselines (Elo simple, cuotas implícitas) | Pendiente |
 | F3 | Modelos (Dixon-Coles + LightGBM 1X2), calibración, backtesting | Pendiente |
 | F4 | Simulador Monte Carlo de la clasificación | Pendiente |
