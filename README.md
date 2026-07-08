@@ -47,7 +47,7 @@ cd ~ && mkdir -p proyectos && cd proyectos
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (47 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (48 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
@@ -94,15 +94,17 @@ uv run mypy src                        # tipos (modo básico)
 | Fuente | Aporta | Tablas |
 |--------|--------|--------|
 | [football-data.co.uk](https://www.football-data.co.uk/spainm.php) | Resultados, tiros/córners/faltas/tarjetas y **cuotas** (bet365, Pinnacle, máx./media de mercado; apertura y cierre) | `matches`, `match_stats`, `odds` |
-| [FBref](https://fbref.com/en/comps/12/) | **xG** por partido y equipo + **jornada oficial** (Wk) | `match_stats.xg`, `matches.matchday` |
+| [FBref](https://fbref.com/en/comps/12/) | **xG** histórico + **jornada oficial** (Wk) | `match_stats.xg`, `matches.matchday` |
+| [Understat](https://understat.com) | **xG de relleno** vía su API interna `getLeagueData` (donde FBref no lo aporta; fuente en vivo prevista para F7) | `match_stats.xg` |
 | [ClubElo](http://clubelo.com) | Rating **Elo** histórico por club | `elo` |
 
 Cobertura: temporadas **2018-19 → 2025-26** (≈ 3.040 partidos). Las
 estadísticas técnico-tácticas detalladas de FBref, Transfermarkt (valor de
 plantillas) y API-Football (calendario 2026-27, lesiones) se incorporan en
-F2/F7 (ADR-003). **Understat**, previsto como fuente de xG, quedó en pausa:
-su rediseño de dic-2025 eliminó los datos embebidos de los que dependía todo
-el ecosistema de scraping (ADR-008).
+F2/F7 (ADR-003). Historia accidentada de las fuentes de xG — Understat
+rediseñó su web (ADR-008), FBref bloquea bots y quitó el xG del calendario en
+2026 (ADR-009/010/011) — resuelta con una cascada: FBref directo → snapshots
+de la Wayback Machine elegidos vía API CDX → relleno con Understat.
 
 Garantías del pipeline (CLAUDE.md §6):
 
@@ -156,9 +158,9 @@ Identificadores legibles: `team_id = "alaves"`,
 │       └── sources/                  # un adaptador por fuente
 │           ├── football_data.py
 │           ├── fbref.py
-│           ├── understat.py          # en pausa (ADR-008)
+│           ├── understat.py          # xG de relleno vía API interna (ADR-011)
 │           └── clubelo.py
-└── tests/                            # 47 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 48 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)
@@ -175,6 +177,7 @@ Identificadores legibles: `team_id = "alaves"`,
 | [008](docs/decisions/008-xg-de-fbref-en-vez-de-understat.md) | xG desde FBref (+ jornada oficial); Understat en pausa tras su rediseño de dic-2025 |
 | [009](docs/decisions/009-transporte-tls-curl-cffi-para-fbref.md) | curl_cffi (huella TLS de Chrome) solo para FBref, cuyo Cloudflare rechaza clientes Python |
 | [010](docs/decisions/010-fallback-wayback-machine-para-fbref.md) | Cascada de descarga de FBref: cache → directo → Wayback Machine → snapshot manual |
+| [011](docs/decisions/011-understat-via-api-interna-como-relleno-de-xg.md) | Understat vuelve vía su endpoint interno getLeagueData como relleno de xG (y fuente en vivo para F7) |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 

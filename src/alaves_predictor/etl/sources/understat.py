@@ -1,25 +1,26 @@
-"""Adaptador de Understat (SPEC §3.1): xG por partido.
+"""Adaptador de Understat (SPEC §3.1): xG por partido, vía su API interna (ADR-011).
 
-Understat no ofrece API: la página https://understat.com/league/La_liga/<año>
-(año = inicio de temporada, p. ej. 2018 para la 2018-19) lleva embebido un
-`var datesData = JSON.parse('...')` con todos los partidos de la temporada,
-con los caracteres especiales escapados como \\xNN. Aquí se extrae ese bloque,
-se desescapa y se valida con pydantic.
+El rediseño de understat.com (dic-2025) eliminó el JSON embebido en el HTML
+(`datesData`), pero la web carga los mismos datos desde un endpoint JSON
+interno y sin bloqueo anti-bot:
 
-El nombre de la variable ha variado entre páginas/épocas del sitio
-(`datesData` en la página de liga; `matchesData` en otras), así que se
-aceptan ambos; si no aparece ninguno, el error lista las variables
-JSON.parse que sí hay en la página para diagnosticar sin re-descargar.
+    GET https://understat.com/getLeagueData/La%20liga/<año>
 
-Nota (ADR-003): la página también incluye `teamsData` con npxG y PPDA por
-partido; se incorporará en F2 cuando las features lo necesiten.
+(año = inicio de temporada; descubierto inspeccionando las peticiones del
+navegador). El parseo es tolerante con el sobre exterior — lista directa o
+diccionario con la lista bajo datesData/matchesData/... — porque es un
+endpoint interno sin contrato público y puede variar.
+
+Papel en el pipeline: fuente de RELLENO de xG para partidos donde FBref no lo
+aporta (su versión 2026 quitó el xG de las páginas de calendario), y fuente
+prevista para el modo temporada (F7).
 """
 
 from __future__ import annotations
 
 import json
-import re
 from datetime import date, datetime
+from urllib.parse import quote
 
 from pydantic import BaseModel, ValidationError
 
@@ -28,14 +29,8 @@ from alaves_predictor.etl.errors import SourceFormatError
 
 SOURCE_NAME = "understat"
 
-# Understat sirve una página sin datos a clientes que no parecen navegador:
-# usar http_cache.BROWSER_HEADERS al descargar (compartidas con FBref).
-
-# La página de liga usa datesData; matchesData se mantiene como fallback.
-_MATCHES_DATA_RE = re.compile(
-    r"var\s+(?:datesData|matchesData)\s*=\s*JSON\.parse\('(.*?)'\)", re.DOTALL
-)
-_ANY_JSON_VAR_RE = re.compile(r"var\s+(\w+)\s*=\s*JSON\.parse")
+# Claves bajo las que el endpoint puede envolver la lista de partidos.
+_MATCH_LIST_KEYS = ("datesData", "matchesData", "matches", "dates")
 
 
 class UnderstatMatch(BaseModel):
@@ -56,48 +51,46 @@ def season_year(season: str) -> int:
     return int(season.split("-")[0])
 
 
-def league_url(season: str, cfg: UnderstatConfig) -> str:
-    return f"{cfg.base_url}/{season_year(season)}"
+def league_data_url(season: str, cfg: UnderstatConfig) -> str:
+    return f"{cfg.base_url}/getLeagueData/{quote(cfg.league)}/{season_year(season)}"
 
 
-def decode_embedded_json(escaped: str) -> list[dict]:
-    """Desescapa el string de JSON.parse (secuencias \\xNN) y lo carga como JSON.
-
-    unicode_escape convierte \\xNN a caracteres latin-1; el paso
-    latin-1 -> utf-8 recupera los caracteres multibyte originales (acentos).
-    """
-    decoded = escaped.encode("utf-8").decode("unicode_escape").encode("latin-1").decode("utf-8")
-    data = json.loads(decoded)
-    if not isinstance(data, list):
-        raise SourceFormatError("El JSON de partidos de Understat no es una lista.")
-    return data
-
-
-def parse_league_page(html: str) -> list[UnderstatMatch]:
-    """Extrae los partidos ya jugados (isResult=true) de la página de liga."""
-    found = _MATCHES_DATA_RE.search(html)
-    if not found:
-        available = sorted(set(_ANY_JSON_VAR_RE.findall(html)))
-        hint = (
-            f"variables JSON.parse presentes: {', '.join(available)}"
-            if available
-            else "la página no contiene ningún JSON.parse (¿página de error o bloqueo?); "
-            "borra el archivo cacheado en data/raw/understat/ o usa --force"
-        )
+def _entries_from(data: object) -> list[dict]:
+    """Localiza la lista de partidos dentro de la respuesta, sea cual sea el sobre."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in _MATCH_LIST_KEYS:
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
         raise SourceFormatError(
-            f"No se encuentra 'datesData'/'matchesData' en la página de Understat; {hint}."
+            "La respuesta de getLeagueData no contiene una lista de partidos bajo "
+            f"{'/'.join(_MATCH_LIST_KEYS)}; claves presentes: {sorted(data)[:10]}."
         )
-    raw_matches = decode_embedded_json(found.group(1))
+    raise SourceFormatError("La respuesta de getLeagueData no es JSON de lista ni objeto.")
+
+
+def parse_league_data(text: str) -> list[UnderstatMatch]:
+    """Extrae los partidos ya jugados (isResult=true) de la respuesta JSON."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SourceFormatError(
+            f"getLeagueData de Understat no devolvió JSON válido: {exc}"
+        ) from exc
 
     matches: list[UnderstatMatch] = []
-    for entry in raw_matches:
+    for entry in _entries_from(data):
         if not entry.get("isResult"):
             continue  # partido aún no jugado
         try:
             matches.append(
                 UnderstatMatch(
                     understat_id=str(entry["id"]),
-                    match_date=datetime.strptime(entry["datetime"], "%Y-%m-%d %H:%M:%S").date(),
+                    match_date=datetime.strptime(
+                        str(entry["datetime"]), "%Y-%m-%d %H:%M:%S"
+                    ).date(),
                     home_team=entry["h"]["title"],
                     away_team=entry["a"]["title"],
                     home_goals=int(entry["goals"]["h"]),
@@ -112,5 +105,5 @@ def parse_league_page(html: str) -> list[UnderstatMatch]:
             ) from exc
 
     if not matches:
-        raise SourceFormatError("La página de Understat no contiene partidos jugados.")
+        raise SourceFormatError("getLeagueData de Understat no contiene partidos jugados.")
     return matches

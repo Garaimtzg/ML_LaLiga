@@ -50,7 +50,8 @@ class FBrefConfig(BaseModel):
 
 
 class UnderstatConfig(BaseModel):
-    base_url: str
+    base_url: str  # raíz del sitio; el endpoint es <base>/getLeagueData/<liga>/<año>
+    league: str = "La liga"
     rate_limit_seconds: float = 3.0
 
 

@@ -186,43 +186,79 @@ def test_fbref_bloqueado_cae_a_wayback(mini_settings, fake_fetch, monkeypatch) -
         conn.close()
 
 
-def test_cache_sin_xg_se_reresuelve_con_otro_snapshot(
-    mini_settings, fake_fetch, monkeypatch
-) -> None:
-    """Una cache con marcadores pero sin xG (snapshot capturado en mal momento)
-    se descarta y se busca un snapshot con xG vía el índice CDX."""
+def _cache_fbref_sin_xg(mini_settings) -> None:
+    """Deja en cache un calendario de FBref con marcadores pero sin xG
+    (la versión 2026 de FBref quitó el xG del calendario, ADR-011)."""
     import re
     from pathlib import Path
 
-    import alaves_predictor.etl.ingest as ingest_mod
-    from alaves_predictor.etl.errors import SourceDownloadError
-
-    fixtures = Path(__file__).parent / "fixtures"
-    good_html = (fixtures / "fbref_schedule_mini.html").read_text()
-    # mismo calendario, celdas de xG vaciadas
+    good_html = (Path(__file__).parent / "fixtures" / "fbref_schedule_mini.html").read_text()
     no_xg_html = re.sub(r'(data-stat="(?:home|away)_xg">)[0-9.]+', r"\1", good_html)
-
     cache = mini_settings.data.raw_dir / "fbref" / "schedule_2018-2019.html"
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(no_xg_html)
 
-    original = fake_fetch
 
-    def directo_bloqueado(url, cache_path, **kwargs):
-        if "fbref.test" in url and "web.archive.org" not in url:
-            raise SourceDownloadError(f"HTTP 403 al descargar {url}: bloqueo.")
-        if "cdx/search" in url:
-            return "20260701123456\n"
-        if "web.archive.org" in url:
-            return good_html
-        return original(url, cache_path, **kwargs)
-
-    monkeypatch.setattr(ingest_mod, "fetch_text", directo_bloqueado)
+def test_fbref_sin_xg_se_rellena_con_understat(mini_settings, fake_fetch) -> None:
+    """Si el calendario de FBref no trae xG, Understat lo rellena (ADR-011),
+    manteniendo la jornada oficial de FBref y sin pisar nada."""
+    _cache_fbref_sin_xg(mini_settings)
     conn = db.connect(mini_settings.data.db_path)
     try:
         report = ingest_historical(conn, mini_settings)
         assert report.xg_matched_by_season == {"2018-19": 12}
-        assert any("Wayback" in w for w in report.warnings)
+        assert any("Understat" in w for w in report.warnings)
+        # el xG es el de Understat (fórmula sintética distinta a la de FBref:
+        # para el Barça visitante con 2 goles, 1.95 vs 2.0)
+        row = conn.execute(
+            "SELECT xg, source FROM match_stats WHERE match_id = ? AND team_id = ?",
+            (make_match_id("2018-19", "alaves", "barcelona"), "barcelona"),
+        ).fetchone()
+        assert row["xg"] == pytest.approx(1.95)
+        assert "understat" in row["source"]
+        # la validación completa pasa
+        failed = [r for r in validate_db(conn, mini_settings) if not r.passed]
+        assert failed == [], [f"{r.name}: {r.detail}" for r in failed]
+    finally:
+        conn.close()
+
+
+def test_relleno_understat_no_pisa_el_xg_de_fbref(mini_settings, fake_fetch) -> None:
+    """Con FBref completo, Understat ni se consulta (sus xG difieren a propósito)."""
+    conn = db.connect(mini_settings.data.db_path)
+    try:
+        report = ingest_historical(conn, mini_settings)
+        assert report.warnings == []
+        row = conn.execute(
+            "SELECT xg, source FROM match_stats WHERE match_id = ? AND team_id = ?",
+            (make_match_id("2018-19", "alaves", "barcelona"), "barcelona"),
+        ).fetchone()
+        assert row["xg"] == pytest.approx(2.0)  # 0.9·2 + 0.2: el de FBref
+        assert "understat" not in row["source"]
+    finally:
+        conn.close()
+
+
+def test_relleno_understat_marcador_discrepante_aborta(
+    mini_settings, fake_fetch, monkeypatch
+) -> None:
+    import alaves_predictor.etl.ingest as ingest_mod
+
+    _cache_fbref_sin_xg(mini_settings)
+    original = fake_fetch
+
+    def corrupto(url, cache_path, **kwargs):
+        text = original(url, cache_path, **kwargs)
+        if "us.test" in url:
+            # rompe los goles 1-2 del primer partido (id 2000)
+            return text.replace('"h": "1"', '"h": "9"', 1)
+        return text
+
+    monkeypatch.setattr(ingest_mod, "fetch_text", corrupto)
+    conn = db.connect(mini_settings.data.db_path)
+    try:
+        with pytest.raises(SourceConsistencyError, match="Marcador discrepante"):
+            ingest_historical(conn, mini_settings)
     finally:
         conn.close()
 

@@ -43,10 +43,11 @@ competition_slug = "La-Liga"
 rate_limit_seconds = 6.0
 
 [sources.understat]
-# EN PAUSA (ADR-008): el rediseño de understat.com de dic-2025 eliminó el JSON
-# embebido del que se extraía el xG. Se conserva el adaptador por si se adapta
-# al nuevo formato en F2 como fuente de contraste.
-base_url = "https://understat.com/league/La_liga"
+# Fuente de RELLENO de xG vía su API interna getLeagueData (ADR-011): cubre
+# los partidos donde FBref no aporta xG (su versión 2026 lo quitó de las
+# páginas de calendario) y será la fuente en vivo de la F7.
+base_url = "https://understat.com"
+league = "La liga"
 rate_limit_seconds = 3.0
 
 [sources.clubelo]

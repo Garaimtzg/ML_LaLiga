@@ -73,7 +73,7 @@ def mini_settings(tmp_path: Path) -> Settings:
             ),
             fbref=FBrefConfig(base_url="https://fbref.test/en/comps", rate_limit_seconds=0.0),
             understat=UnderstatConfig(
-                base_url="https://us.test/league/La_liga", rate_limit_seconds=0.0
+                base_url="https://us.test", league="Mini liga", rate_limit_seconds=0.0
             ),
             clubelo=ClubEloConfig(
                 base_url="http://elo.test", rate_limit_seconds=0.0, history_start="2018-07-01"
@@ -93,7 +93,8 @@ def fake_fetch(monkeypatch: pytest.MonkeyPatch):
         if "fbref.test" in url:
             return (FIXTURES / "fbref_schedule_mini.html").read_text()
         if "us.test" in url:
-            return (FIXTURES / "understat_mini.html").read_text()
+            assert "getLeagueData/Mini%20liga/2018" in url  # endpoint nuevo (ADR-011)
+            return (FIXTURES / "understat_league_mini.json").read_text()
         if "elo.test" in url:
             club = url.rsplit("/", 1)[-1]
             path = FIXTURES / f"clubelo_{club}.csv"

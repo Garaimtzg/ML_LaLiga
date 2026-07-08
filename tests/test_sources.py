@@ -94,11 +94,11 @@ def test_fbref_season_slug_y_url() -> None:
     )
 
 
-# --- Understat (EN PAUSA, ADR-008: el parser se conserva para el formato antiguo) ---
+# --- Understat (API interna getLeagueData, ADR-011) ---------------------------
 
 
-def test_understat_parsea_fixture() -> None:
-    matches = understat.parse_league_page((FIXTURES / "understat_mini.html").read_text())
+def test_understat_parsea_fixture_json() -> None:
+    matches = understat.parse_league_data((FIXTURES / "understat_league_mini.json").read_text())
     assert len(matches) == 12  # el partido con isResult=false se ignora
     first = matches[0]
     assert first.home_team == "Alaves"
@@ -108,33 +108,35 @@ def test_understat_parsea_fixture() -> None:
     assert first.match_date == date(2018, 8, 18)
 
 
-def test_understat_decodifica_acentos() -> None:
-    # "Alavés" con é escapada como \xc3\xa9 (UTF-8 escapado byte a byte, como hace Understat)
-    escaped = r"\x5b\x7b\x22name\x22\x3a\x22Alav\xc3\xa9s\x22\x7d\x5d"
-    data = understat.decode_embedded_json(escaped)
-    assert data == [{"name": "Alavés"}]
+def test_understat_acepta_lista_directa_y_otros_sobres() -> None:
+    """El sobre exterior del endpoint interno puede variar: lista o dict."""
+    import json
+
+    payload = json.loads((FIXTURES / "understat_league_mini.json").read_text())
+    entries = payload["datesData"]
+    assert len(understat.parse_league_data(json.dumps(entries))) == 12
+    assert len(understat.parse_league_data(json.dumps({"matchesData": entries}))) == 12
 
 
-def test_understat_acepta_matchesdata_como_fallback() -> None:
-    """El nombre de la variable ha cambiado entre épocas del sitio; se aceptan ambos."""
-    html = (FIXTURES / "understat_mini.html").read_text().replace("datesData", "matchesData")
-    assert len(understat.parse_league_page(html)) == 12
+def test_understat_sobre_desconocido_lista_claves() -> None:
+    with pytest.raises(SourceFormatError, match="claves presentes"):
+        understat.parse_league_data('{"otraCosa": []}')
 
 
-def test_understat_html_sin_datos_lista_variables_disponibles() -> None:
-    html = "<script>var playersData = JSON.parse('\\x5b\\x5d');</script>"
-    with pytest.raises(SourceFormatError, match="playersData"):
-        understat.parse_league_page(html)
+def test_understat_no_json_falla_ruidosamente() -> None:
+    with pytest.raises(SourceFormatError, match="JSON"):
+        understat.parse_league_data("<html>bloqueo</html>")
 
 
-def test_understat_pagina_de_bloqueo_sugiere_borrar_cache() -> None:
-    with pytest.raises(SourceFormatError, match="data/raw/understat"):
-        understat.parse_league_page("<html><body>mantenimiento</body></html>")
+def test_understat_url_y_season_year() -> None:
+    from alaves_predictor.config import UnderstatConfig
 
-
-def test_understat_season_year() -> None:
     assert understat.season_year("2018-19") == 2018
     assert understat.season_year("2025-26") == 2025
+    cfg = UnderstatConfig(base_url="https://understat.com", league="La liga")
+    assert understat.league_data_url("2025-26", cfg) == (
+        "https://understat.com/getLeagueData/La%20liga/2025"
+    )
 
 
 # --- ClubElo -----------------------------------------------------------------

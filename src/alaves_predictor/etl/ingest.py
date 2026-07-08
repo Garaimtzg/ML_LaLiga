@@ -29,8 +29,8 @@ from alaves_predictor.etl.errors import (
     SourceFormatError,
     UnknownTeamError,
 )
-from alaves_predictor.etl.http_cache import fetch_text
-from alaves_predictor.etl.sources import clubelo, fbref, football_data
+from alaves_predictor.etl.http_cache import BROWSER_HEADERS, fetch_text
+from alaves_predictor.etl.sources import clubelo, fbref, football_data, understat
 from alaves_predictor.etl.teams import TeamRegistry
 
 
@@ -217,12 +217,12 @@ def _fetch_fbref_schedule(
     """Resuelve el calendario de una temporada de FBref. Devuelve (partidos, fuente).
 
     Orden de intentos (ADR-009/010):
-    1. Cache local (salvo force) — solo si parsea Y tiene xG; una cache con
-       marcadores pero sin xG (snapshot capturado en mal momento) se descarta
-       y se re-resuelve sola.
+    1. Cache local (salvo force), si parsea. Puede no traer xG (la versión
+       2026 de FBref lo quitó del calendario): el relleno llega de Understat
+       (ADR-011), así que aquí basta con jornada oficial y marcadores.
     2. FBref directo con huella TLS de Chrome (curl_cffi).
     3. Snapshots de la Wayback Machine: se listan con la API CDX y se prueban
-       del más reciente hacia atrás hasta encontrar uno con xG.
+       del más reciente hacia atrás, prefiriendo el primero que tenga xG.
     Si todo falla, el error incluye cómo guardar el snapshot a mano en la cache.
     """
     cfg = settings.sources.fbref
@@ -232,9 +232,7 @@ def _fetch_fbref_schedule(
     # 1. Cache local
     if cache.exists() and not force:
         try:
-            matches = fbref.parse_schedule(cache.read_text(encoding="utf-8"))
-            if _has_xg(matches):
-                return matches, fbref.SOURCE_NAME
+            return fbref.parse_schedule(cache.read_text(encoding="utf-8")), fbref.SOURCE_NAME
         except SourceFormatError:
             pass  # cache envenenada (página de bloqueo): re-resolver
 
@@ -280,16 +278,15 @@ def _fetch_fbref_schedule(
             return matches, f"{fbref.SOURCE_NAME}-wayback"
         best_without_xg = best_without_xg or matches
 
-    detail = (
-        "los snapshots archivados de esa temporada no contienen xG"
-        if best_without_xg is not None
-        else f"último error: {last_error}"
-    )
+    if best_without_xg is not None:
+        # Ningún snapshot trae xG (FBref lo quitó del calendario en 2026):
+        # se acepta el mejor por la jornada oficial; el xG lo pone Understat.
+        return best_without_xg, f"{fbref.SOURCE_NAME}-wayback"
     raise SourceDownloadError(
-        f"No se pudo obtener el calendario de FBref de {season} con xG ni directo ni vía "
-        f"Wayback Machine ({detail}). Alternativa manual: abre {url} en tu navegador, "
-        f"guarda la página como HTML (Ctrl+S, 'solo HTML') en '{cache}' y relanza la "
-        "ingesta: la leerá de la cache."
+        f"No se pudo obtener el calendario de FBref de {season} ni directo ni vía "
+        f"Wayback Machine (último error: {last_error}). Alternativa manual: abre {url} "
+        f"en tu navegador, guarda la página como HTML (Ctrl+S, 'solo HTML') en '{cache}' "
+        "y relanza la ingesta: la leerá de la cache."
     )
 
 
@@ -371,6 +368,98 @@ def ingest_fbref_season(
     return matched, via
 
 
+def ingest_understat_xg(
+    conn: sqlite3.Connection,
+    season: str,
+    settings: Settings,
+    registry: TeamRegistry,
+    *,
+    force: bool = False,
+) -> int:
+    """Rellena con Understat el xG de los partidos que aún no lo tienen (ADR-011).
+
+    Solo toca partidos sin xG (nunca pisa el de FBref) y cruza el marcador con
+    el almacenado antes de insertar. Devuelve el nº de partidos rellenados.
+    """
+    # Partidos de la temporada con algún equipo sin xG.
+    pending = {
+        row["match_id"]
+        for row in conn.execute(
+            "SELECT m.match_id FROM matches m JOIN match_stats ms "
+            "ON ms.match_id = m.match_id WHERE m.season = ? AND ms.xg IS NULL",
+            (season,),
+        )
+    }
+    if not pending:
+        return 0
+
+    cfg = settings.sources.understat
+    url = understat.league_data_url(season, cfg)
+    cache = settings.data.raw_dir / "understat" / f"league_{understat.season_year(season)}.json"
+    had_cache = cache.exists()
+    text = fetch_text(
+        url,
+        cache,
+        rate_limit_seconds=cfg.rate_limit_seconds,
+        force=force,
+        headers=BROWSER_HEADERS,
+    )
+    try:
+        us_matches = understat.parse_league_data(text)
+    except SourceFormatError:
+        if not (had_cache and not force):
+            raise
+        # cache envenenada de una ejecución anterior: re-descarga una vez
+        text = fetch_text(
+            url,
+            cache,
+            rate_limit_seconds=cfg.rate_limit_seconds,
+            force=True,
+            headers=BROWSER_HEADERS,
+        )
+        us_matches = understat.parse_league_data(text)
+    now = datetime.now(UTC).isoformat()
+
+    filled = 0
+    for m in us_matches:
+        home_id = registry.resolve("understat", m.home_team)
+        away_id = registry.resolve("understat", m.away_team)
+        match_id = make_match_id(season, home_id, away_id)
+        if match_id not in pending:
+            continue  # ya tiene xG (FBref) o no existe: no tocar
+        row = conn.execute(
+            "SELECT date, home_goals, away_goals FROM matches WHERE match_id = ?", (match_id,)
+        ).fetchone()
+        if row is None:
+            continue
+        # Verificación cruzada de marcadores (CLAUDE.md §6).
+        if (row["home_goals"], row["away_goals"]) != (m.home_goals, m.away_goals):
+            raise SourceConsistencyError(
+                f"Marcador discrepante en {match_id}: almacenado "
+                f"{row['home_goals']}-{row['away_goals']} vs Understat "
+                f"{m.home_goals}-{m.away_goals}. No se inserta nada."
+            )
+        stored_date = date.fromisoformat(row["date"])
+        if abs((stored_date - m.match_date).days) > 1:
+            raise SourceConsistencyError(
+                f"Fecha discrepante en {match_id}: almacenada {stored_date} vs "
+                f"Understat {m.match_date} (>1 día de diferencia)."
+            )
+        for team_id, is_home, xg in ((home_id, 1, m.home_xg), (away_id, 0, m.away_xg)):
+            _upsert_match_stats(
+                conn,
+                match_id=match_id,
+                team_id=team_id,
+                is_home=is_home,
+                values={"xg": xg},
+                source=understat.SOURCE_NAME,
+                fetched_at=now,
+            )
+        filled += 1
+    conn.commit()
+    return filled
+
+
 def ingest_clubelo(
     conn: sqlite3.Connection,
     settings: Settings,
@@ -428,16 +517,25 @@ def ingest_historical(
         # Base aproximada por conteo; FBref la sobreescribe con la Wk oficial.
         assign_matchdays(conn, season)
         n_xg, via = ingest_fbref_season(conn, season, settings, registry, force=force)
-        report.xg_matched_by_season[season] = n_xg
-        conn.commit()
         if via != fbref.SOURCE_NAME:
             report.warnings.append(
-                f"{season}: FBref directo bloqueado; xG obtenido del snapshot de la "
+                f"{season}: FBref directo bloqueado; calendario obtenido de la "
                 "Wayback Machine (verificado contra football-data)."
             )
+        # Relleno de xG con Understat para lo que FBref no cubra (ADR-011).
+        if n_xg < n_matches:
+            filled = ingest_understat_xg(conn, season, settings, registry, force=force)
+            if filled:
+                report.warnings.append(
+                    f"{season}: xG de {filled} partidos rellenado con Understat "
+                    f"(FBref cubría {n_xg})."
+                )
+            n_xg += filled
+        report.xg_matched_by_season[season] = n_xg
+        conn.commit()
         if n_xg < n_matches:
             report.warnings.append(
-                f"{season}: FBref solo cubre {n_xg}/{n_matches} partidos con xG."
+                f"{season}: solo {n_xg}/{n_matches} partidos con xG (FBref + Understat)."
             )
 
     report.elo_rows_by_team = ingest_clubelo(conn, settings, registry, force=force)
