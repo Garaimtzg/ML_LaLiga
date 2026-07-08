@@ -307,6 +307,66 @@ def test_validacion_detecta_bd_incompleta(mini_settings, fake_fetch) -> None:
         conn.close()
 
 
+def test_clubelo_caido_no_tumba_la_ingesta(mini_settings, fake_fetch, monkeypatch) -> None:
+    """Si ClubElo no responde y la BD está vacía de Elo: aviso fuerte, la
+    ingesta termina, y es `alaves validate` quien marca el hueco."""
+    import alaves_predictor.etl.ingest as ingest_mod
+    from alaves_predictor.etl.errors import SourceDownloadError
+
+    original = fake_fetch
+
+    def clubelo_caido(url, cache_path, **kwargs):
+        if "elo.test" in url:
+            raise SourceDownloadError(f"Fallo de red descargando {url} tras 3 intentos: timeout")
+        return original(url, cache_path, **kwargs)
+
+    monkeypatch.setattr(ingest_mod, "fetch_text", clubelo_caido)
+    conn = db.connect(mini_settings.data.db_path)
+    try:
+        report = ingest_historical(conn, mini_settings)
+        assert report.matches_by_season == {"2018-19": 12}  # el resto se cargó
+        assert any("ClubElo no responde" in w and "ATENCIÓN" in w for w in report.warnings)
+        failed = {r.name for r in validate_db(conn, mini_settings) if not r.passed}
+        assert "[global] Elo para todos los equipos" in failed
+    finally:
+        conn.close()
+
+
+def test_clubelo_caido_con_bd_poblada_solo_avisa(mini_settings, fake_fetch, monkeypatch) -> None:
+    """Con el Elo ya en BD, una caída de ClubElo ni siquiera toca la red."""
+    import alaves_predictor.etl.ingest as ingest_mod
+    from alaves_predictor.etl.errors import SourceDownloadError
+
+    conn = db.connect(mini_settings.data.db_path)
+    try:
+        ingest_historical(conn, mini_settings)  # primera carga completa
+
+        original = fake_fetch
+        calls = {"clubelo": 0}
+
+        def clubelo_caido(url, cache_path, **kwargs):
+            if "elo.test" in url:
+                calls["clubelo"] += 1
+                raise SourceDownloadError("timeout")
+            return original(url, cache_path, **kwargs)
+
+        monkeypatch.setattr(ingest_mod, "fetch_text", clubelo_caido)
+        report = ingest_historical(conn, mini_settings)
+        # la BD manda: con Elo almacenado no se pide nada a ClubElo
+        assert calls["clubelo"] == 0
+        assert report.elo_rows_by_team == {
+            "alaves": 3,
+            "barcelona": 3,
+            "real-sociedad": 3,
+            "getafe": 3,
+        }
+        assert not any("ClubElo" in w for w in report.warnings)
+        failed = [r for r in validate_db(conn, mini_settings) if not r.passed]
+        assert failed == []
+    finally:
+        conn.close()
+
+
 def test_asignacion_de_jornadas_absorbe_aplazamientos(mini_db) -> None:
     """Un partido aplazado recibe la jornada correspondiente a su posición real
     en el calendario de ambos equipos (aproximación documentada en ADR-006)."""
