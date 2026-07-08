@@ -137,6 +137,21 @@ def test_understat_url_y_season_year() -> None:
     assert understat.league_data_url("2025-26", cfg) == (
         "https://understat.com/getLeagueData/La%20liga/2025"
     )
+    assert understat.league_page_url("2025-26", cfg) == (
+        "https://understat.com/league/La_liga/2025"
+    )
+
+
+def test_understat_cabeceras_de_peticion_ajax() -> None:
+    """Sin Referer y X-Requested-With el endpoint interno responde 404."""
+    from alaves_predictor.config import UnderstatConfig
+
+    cfg = UnderstatConfig(base_url="https://understat.com", league="La liga")
+    headers = understat.api_headers("2025-26", cfg)
+    assert headers["Referer"] == "https://understat.com/league/La_liga/2025"
+    assert headers["X-Requested-With"] == "XMLHttpRequest"
+    assert "json" in headers["Accept"]
+    assert "Mozilla" in headers["User-Agent"]
 
 
 # --- ClubElo -----------------------------------------------------------------

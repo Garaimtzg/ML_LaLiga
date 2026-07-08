@@ -29,7 +29,7 @@ from alaves_predictor.etl.errors import (
     SourceFormatError,
     UnknownTeamError,
 )
-from alaves_predictor.etl.http_cache import BROWSER_HEADERS, fetch_text
+from alaves_predictor.etl.http_cache import fetch_text
 from alaves_predictor.etl.sources import clubelo, fbref, football_data, understat
 from alaves_predictor.etl.teams import TeamRegistry
 
@@ -402,7 +402,7 @@ def ingest_understat_xg(
         cache,
         rate_limit_seconds=cfg.rate_limit_seconds,
         force=force,
-        headers=BROWSER_HEADERS,
+        headers=understat.api_headers(season, cfg),
     )
     try:
         us_matches = understat.parse_league_data(text)
@@ -415,7 +415,7 @@ def ingest_understat_xg(
             cache,
             rate_limit_seconds=cfg.rate_limit_seconds,
             force=True,
-            headers=BROWSER_HEADERS,
+            headers=understat.api_headers(season, cfg),
         )
         us_matches = understat.parse_league_data(text)
     now = datetime.now(UTC).isoformat()

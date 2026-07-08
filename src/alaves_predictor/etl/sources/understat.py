@@ -26,6 +26,7 @@ from pydantic import BaseModel, ValidationError
 
 from alaves_predictor.config import UnderstatConfig
 from alaves_predictor.etl.errors import SourceFormatError
+from alaves_predictor.etl.http_cache import BROWSER_HEADERS
 
 SOURCE_NAME = "understat"
 
@@ -53,6 +54,26 @@ def season_year(season: str) -> int:
 
 def league_data_url(season: str, cfg: UnderstatConfig) -> str:
     return f"{cfg.base_url}/getLeagueData/{quote(cfg.league)}/{season_year(season)}"
+
+
+def league_page_url(season: str, cfg: UnderstatConfig) -> str:
+    """Página de liga (espacios como guion bajo): sirve de Referer del endpoint."""
+    return f"{cfg.base_url}/league/{cfg.league.replace(' ', '_')}/{season_year(season)}"
+
+
+def api_headers(season: str, cfg: UnderstatConfig) -> dict[str, str]:
+    """Cabeceras que espera getLeagueData: sin ellas el servidor responde 404.
+
+    El endpoint es interno (lo llama el JavaScript de la página): exige
+    parecer una petición AJAX del propio sitio — Referer de la página de liga
+    y X-Requested-With — además de las cabeceras de navegador habituales.
+    """
+    return {
+        **BROWSER_HEADERS,
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Referer": league_page_url(season, cfg),
+        "X-Requested-With": "XMLHttpRequest",
+    }
 
 
 def _entries_from(data: object) -> list[dict]:
