@@ -219,6 +219,12 @@ def test_fbref_sin_xg_se_rellena_con_understat(mini_settings, fake_fetch) -> Non
         # la validación completa pasa
         failed = [r for r in validate_db(conn, mini_settings) if not r.passed]
         assert failed == [], [f"{r.name}: {r.detail}" for r in failed]
+
+        # Re-ejecución: el xG ya está en la BD, así que la cobertura se mide
+        # contra la BD y no debe aparecer ningún aviso (ni falso "0/N").
+        report2 = ingest_historical(conn, mini_settings)
+        assert report2.xg_matched_by_season == {"2018-19": 12}
+        assert report2.warnings == []
     finally:
         conn.close()
 

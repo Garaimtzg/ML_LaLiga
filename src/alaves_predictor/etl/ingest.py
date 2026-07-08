@@ -211,6 +211,19 @@ def _has_xg(matches: list[fbref.FBrefMatch]) -> bool:
     return any(m.home_xg is not None for m in matches)
 
 
+def _xg_coverage(conn: sqlite3.Connection, season: str) -> int:
+    """Nº de partidos de la temporada con xG almacenado para ambos equipos."""
+    return conn.execute(
+        "SELECT COUNT(*) AS n FROM ("
+        "  SELECT ms.match_id FROM match_stats ms"
+        "  JOIN matches m ON m.match_id = ms.match_id"
+        "  WHERE m.season = ? AND ms.xg IS NOT NULL"
+        "  GROUP BY ms.match_id HAVING COUNT(*) = 2"
+        ")",
+        (season,),
+    ).fetchone()["n"]
+
+
 def _fetch_fbref_schedule(
     season: str, settings: Settings, *, force: bool = False
 ) -> tuple[list[fbref.FBrefMatch], str]:
@@ -516,21 +529,22 @@ def ingest_historical(
         report.matches_by_season[season] = n_matches
         # Base aproximada por conteo; FBref la sobreescribe con la Wk oficial.
         assign_matchdays(conn, season)
-        n_xg, via = ingest_fbref_season(conn, season, settings, registry, force=force)
+        _, via = ingest_fbref_season(conn, season, settings, registry, force=force)
         if via != fbref.SOURCE_NAME:
             report.warnings.append(
                 f"{season}: FBref directo bloqueado; calendario obtenido de la "
                 "Wayback Machine (verificado contra football-data)."
             )
-        # Relleno de xG con Understat para lo que FBref no cubra (ADR-011).
-        if n_xg < n_matches:
+        # Relleno de xG con Understat para lo que falte (ADR-011). La cobertura
+        # se mide siempre contra la BD, no contra lo aportado en esta pasada:
+        # en re-ejecuciones el xG ya está almacenado y no hay nada que rellenar.
+        if _xg_coverage(conn, season) < n_matches:
             filled = ingest_understat_xg(conn, season, settings, registry, force=force)
             if filled:
                 report.warnings.append(
-                    f"{season}: xG de {filled} partidos rellenado con Understat "
-                    f"(FBref cubría {n_xg})."
+                    f"{season}: xG de {filled} partidos rellenado con Understat."
                 )
-            n_xg += filled
+        n_xg = _xg_coverage(conn, season)
         report.xg_matched_by_season[season] = n_xg
         conn.commit()
         if n_xg < n_matches:
