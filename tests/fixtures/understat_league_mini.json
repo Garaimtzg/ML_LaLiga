@@ -1,0 +1,365 @@
+{
+ "datesData": [
+  {
+   "id": "2000",
+   "isResult": true,
+   "h": {
+    "id": "0",
+    "title": "Alaves",
+    "short_title": "ALA"
+   },
+   "a": {
+    "id": "50",
+    "title": "Barcelona",
+    "short_title": "BAR"
+   },
+   "goals": {
+    "h": "1",
+    "a": "2"
+   },
+   "xG": {
+    "h": "1.2000",
+    "a": "1.9500"
+   },
+   "datetime": "2018-08-18 18:00:00",
+   "forecast": {
+    "w": "0.4",
+    "d": "0.3",
+    "l": "0.3"
+   }
+  },
+  {
+   "id": "2001",
+   "isResult": true,
+   "h": {
+    "id": "1",
+    "title": "Real Sociedad",
+    "short_title": "SOC"
+   },
+   "a": {
+    "id": "51",
+    "title": "Getafe",
+    "short_title": "GET"
+   },
+   "goals": {
+    "h": "2",
+    "a": "0"
+   },
+   "xG": {
+    "h": "2.0500",
+    "a": "0.2500"
+   },
+   "datetime": "2018-08-18 18:00:00",
+   "forecast": {
+    "w": "0.4",
+    "d": "0.3",
+    "l": "0.3"
+   }
+  },
+  {
+   "id": "2002",
+   "isResult": true,
+   "h": {
+    "id": "2",
+    "title": "Alaves",
+    "short_title": "ALA"
+   },
+   "a": {
+    "id": "52",
+    "title": "Real Sociedad",
+    "short_title": "SOC"
+   },
+   "goals": {
+    "h": "1",
+    "a": "1"
+   },
+   "xG": {
+    "h": "1.2000",
+    "a": "1.1000"
+   },
+   "datetime": "2018-08-25 18:00:00",
+   "forecast": {
+    "w": "0.4",
+    "d": "0.3",
+    "l": "0.3"
+   }
+  },
+  {
+   "id": "2003",
+   "isResult": true,
+   "h": {
+    "id": "3",
+    "title": "Getafe",
+    "short_title": "GET"
+   },
+   "a": {
+    "id": "53",
+    "title": "Barcelona",
+    "short_title": "BAR"
+   },
+   "goals": {
+    "h": "0",
+    "a": "2"
+   },
+   "xG": {
+    "h": "0.3500",
+    "a": "1.9500"
+   },
+   "datetime": "2018-08-25 18:00:00",
+   "forecast": {
+    "w": "0.4",
+    "d": "0.3",
+    "l": "0.3"
+   }
+  },
+  {
+   "id": "2004",
+   "isResult": true,
+   "h": {
+    "id": "4",
+    "title": "Alaves",
+    "short_title": "ALA"
+   },
+   "a": {
+    "id": "54",
+    "title": "Getafe",
+    "short_title": "GET"
+   },
+   "goals": {
+    "h": "2",
+    "a": "1"
+   },
+   "xG": {
+    "h": "2.0500",
+    "a": "1.1000"
+   },
+   "datetime": "2018-09-01 18:00:00",
+   "forecast": {
+    "w": "0.4",
+    "d": "0.3",
+    "l": "0.3"
+   }
+  },
+  {
+   "id": "2005",
+   "isResult": true,
+   "h": {
+    "id": "5",
+    "title": "Barcelona",
+    "short_title": "BAR"
+   },
+   "a": {
+    "id": "55",
+    "title": "Real Sociedad",
+    "short_title": "SOC"
+   },
+   "goals": {
+    "h": "3",
+    "a": "1"
+   },
+   "xG": {
+    "h": "2.9000",
+    "a": "1.1000"
+   },
+   "datetime": "2018-09-01 18:00:00",
+   "forecast": {
+    "w": "0.4",
+    "d": "0.3",
+    "l": "0.3"
+   }
+  },
+  {
+   "id": "2006",
+   "isResult": true,
+   "h": {
+    "id": "6",
+    "title": "Barcelona",
+    "short_title": "BAR"
+   },
+   "a": {
+    "id": "56",
+    "title": "Alaves",
+    "short_title": "ALA"
+   },
+   "goals": {
+    "h": "2",
+    "a": "0"
+   },
+   "xG": {
+    "h": "2.0500",
+    "a": "0.2500"
+   },
+   "datetime": "2018-09-08 18:00:00",
+   "forecast": {
+    "w": "0.4",
+    "d": "0.3",
+    "l": "0.3"
+   }
+  },
+  {
+   "id": "2007",
+   "isResult": true,
+   "h": {
+    "id": "7",
+    "title": "Getafe",
+    "short_title": "GET"
+   },
+   "a": {
+    "id": "57",
+    "title": "Real Sociedad",
+    "short_title": "SOC"
+   },
+   "goals": {
+    "h": "1",
+    "a": "1"
+   },
+   "xG": {
+    "h": "1.2000",
+    "a": "1.1000"
+   },
+   "datetime": "2018-09-08 18:00:00",
+   "forecast": {
+    "w": "0.4",
+    "d": "0.3",
+    "l": "0.3"
+   }
+  },
+  {
+   "id": "2008",
+   "isResult": true,
+   "h": {
+    "id": "8",
+    "title": "Real Sociedad",
+    "short_title": "SOC"
+   },
+   "a": {
+    "id": "58",
+    "title": "Alaves",
+    "short_title": "ALA"
+   },
+   "goals": {
+    "h": "0",
+    "a": "1"
+   },
+   "xG": {
+    "h": "0.3500",
+    "a": "1.1000"
+   },
+   "datetime": "2018-09-15 18:00:00",
+   "forecast": {
+    "w": "0.4",
+    "d": "0.3",
+    "l": "0.3"
+   }
+  },
+  {
+   "id": "2009",
+   "isResult": true,
+   "h": {
+    "id": "9",
+    "title": "Barcelona",
+    "short_title": "BAR"
+   },
+   "a": {
+    "id": "59",
+    "title": "Getafe",
+    "short_title": "GET"
+   },
+   "goals": {
+    "h": "4",
+    "a": "0"
+   },
+   "xG": {
+    "h": "3.7500",
+    "a": "0.2500"
+   },
+   "datetime": "2018-09-15 18:00:00",
+   "forecast": {
+    "w": "0.4",
+    "d": "0.3",
+    "l": "0.3"
+   }
+  },
+  {
+   "id": "2010",
+   "isResult": true,
+   "h": {
+    "id": "10",
+    "title": "Getafe",
+    "short_title": "GET"
+   },
+   "a": {
+    "id": "60",
+    "title": "Alaves",
+    "short_title": "ALA"
+   },
+   "goals": {
+    "h": "0",
+    "a": "0"
+   },
+   "xG": {
+    "h": "0.3500",
+    "a": "0.2500"
+   },
+   "datetime": "2018-09-22 18:00:00",
+   "forecast": {
+    "w": "0.4",
+    "d": "0.3",
+    "l": "0.3"
+   }
+  },
+  {
+   "id": "2011",
+   "isResult": true,
+   "h": {
+    "id": "11",
+    "title": "Real Sociedad",
+    "short_title": "SOC"
+   },
+   "a": {
+    "id": "61",
+    "title": "Barcelona",
+    "short_title": "BAR"
+   },
+   "goals": {
+    "h": "1",
+    "a": "2"
+   },
+   "xG": {
+    "h": "1.2000",
+    "a": "1.9500"
+   },
+   "datetime": "2018-09-22 18:00:00",
+   "forecast": {
+    "w": "0.4",
+    "d": "0.3",
+    "l": "0.3"
+   }
+  },
+  {
+   "id": "2099",
+   "isResult": false,
+   "h": {
+    "id": "0",
+    "title": "Alaves",
+    "short_title": "ALA"
+   },
+   "a": {
+    "id": "50",
+    "title": "Getafe",
+    "short_title": "GET"
+   },
+   "goals": {
+    "h": null,
+    "a": null
+   },
+   "xG": {
+    "h": null,
+    "a": null
+   },
+   "datetime": "2019-05-30 18:00:00"
+  }
+ ],
+ "teamsData": {},
+ "playersData": []
+}

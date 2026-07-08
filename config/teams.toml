@@ -1,0 +1,231 @@
+# Mapeo de nombres de equipos entre fuentes (ADR-005).
+#
+# Cada clave de tabla es el team_id canónico (slug legible, usado en la BD).
+# - name:          nombre para mostrar
+# - football_data: nombre exacto en los CSV de football-data.co.uk
+# - fbref:         lista de nombres usados por FBref a lo largo de los años
+#                  (los snapshots de la Wayback Machine mezclan épocas; el
+#                  primero de la lista es el alias principal/moderno)
+# - understat:     campo "title" en el JSON de understat.com
+# - clubelo:       componente de URL en api.clubelo.com/<Club> (sin espacios)
+#
+# Cualquier fuente admite un alias único (string) o una lista de alias.
+#
+# Si una fuente usa un nombre no registrado aquí, la ingesta falla ruidosamente
+# indicando el nombre desconocido y este archivo como lugar donde corregirlo.
+# Cobertura: los 28 clubes que han jugado LaLiga entre 2018-19 y 2025-26,
+# más los ascendidos a la 2026-27 (al final del archivo).
+
+[alaves]
+name = "Deportivo Alavés"
+football_data = "Alaves"
+fbref = ["Alavés", "Deportivo Alavés"]
+understat = "Alaves"
+clubelo = "Alaves"
+
+[almeria]
+name = "UD Almería"
+football_data = "Almeria"
+fbref = ["Almería", "UD Almería"]
+understat = "Almeria"
+clubelo = "Almeria"
+
+[athletic-club]
+name = "Athletic Club"
+football_data = "Ath Bilbao"
+fbref = ["Athletic Club", "Athletic Bilbao"]
+understat = "Athletic Club"
+clubelo = "Bilbao"
+
+[atletico-madrid]
+name = "Atlético de Madrid"
+football_data = "Ath Madrid"
+fbref = ["Atlético Madrid", "Atlético de Madrid"]
+understat = "Atletico Madrid"
+clubelo = "Atletico"
+
+[barcelona]
+name = "FC Barcelona"
+football_data = "Barcelona"
+fbref = ["Barcelona", "FC Barcelona"]
+understat = "Barcelona"
+clubelo = "Barcelona"
+
+[betis]
+name = "Real Betis"
+football_data = "Betis"
+fbref = ["Betis", "Real Betis"]
+understat = "Real Betis"
+clubelo = "Betis"
+
+[cadiz]
+name = "Cádiz CF"
+football_data = "Cadiz"
+fbref = ["Cádiz", "Cádiz CF"]
+understat = "Cadiz"
+clubelo = "Cadiz"
+
+[celta-vigo]
+name = "Celta de Vigo"
+football_data = "Celta"
+fbref = ["Celta Vigo", "Celta de Vigo", "RC Celta"]
+understat = "Celta Vigo"
+clubelo = "Celta"
+
+[eibar]
+name = "SD Eibar"
+football_data = "Eibar"
+fbref = ["Eibar", "SD Eibar"]
+understat = "Eibar"
+clubelo = "Eibar"
+
+[elche]
+name = "Elche CF"
+football_data = "Elche"
+fbref = ["Elche", "Elche CF"]
+understat = "Elche"
+clubelo = "Elche"
+
+[espanyol]
+name = "RCD Espanyol"
+football_data = "Espanol"
+fbref = ["Espanyol", "RCD Espanyol"]
+understat = "Espanyol"
+clubelo = "Espanyol"
+
+[getafe]
+name = "Getafe CF"
+football_data = "Getafe"
+fbref = ["Getafe", "Getafe CF"]
+understat = "Getafe"
+clubelo = "Getafe"
+
+[girona]
+name = "Girona FC"
+football_data = "Girona"
+fbref = ["Girona", "Girona FC"]
+understat = "Girona"
+clubelo = "Girona"
+
+[granada]
+name = "Granada CF"
+football_data = "Granada"
+fbref = ["Granada", "Granada CF"]
+understat = "Granada"
+clubelo = "Granada"
+
+[huesca]
+name = "SD Huesca"
+football_data = "Huesca"
+fbref = ["Huesca", "SD Huesca"]
+understat = "SD Huesca"
+clubelo = "Huesca"
+
+[las-palmas]
+name = "UD Las Palmas"
+football_data = "Las Palmas"
+fbref = ["Las Palmas", "UD Las Palmas"]
+understat = "Las Palmas"
+clubelo = "LasPalmas"
+
+[leganes]
+name = "CD Leganés"
+football_data = "Leganes"
+fbref = ["Leganés", "CD Leganés"]
+understat = "Leganes"
+clubelo = "Leganes"
+
+[levante]
+name = "Levante UD"
+football_data = "Levante"
+fbref = ["Levante", "Levante UD"]
+understat = "Levante"
+clubelo = "Levante"
+
+[mallorca]
+name = "RCD Mallorca"
+football_data = "Mallorca"
+fbref = ["Mallorca", "RCD Mallorca"]
+understat = "Mallorca"
+clubelo = "Mallorca"
+
+[osasuna]
+name = "CA Osasuna"
+football_data = "Osasuna"
+fbref = ["Osasuna", "CA Osasuna"]
+understat = "Osasuna"
+clubelo = "Osasuna"
+
+[oviedo]
+name = "Real Oviedo"
+football_data = "Oviedo"
+fbref = ["Oviedo", "Real Oviedo"]
+understat = "Real Oviedo"
+clubelo = "Oviedo"
+
+[rayo-vallecano]
+name = "Rayo Vallecano"
+football_data = "Vallecano"
+fbref = ["Rayo Vallecano", "Rayo"]
+understat = "Rayo Vallecano"
+clubelo = "RayoVallecano"
+
+[real-madrid]
+name = "Real Madrid"
+football_data = "Real Madrid"
+fbref = ["Real Madrid"]
+understat = "Real Madrid"
+clubelo = "RealMadrid"
+
+[real-sociedad]
+name = "Real Sociedad"
+football_data = "Sociedad"
+fbref = ["Real Sociedad"]
+understat = "Real Sociedad"
+clubelo = "Sociedad"
+
+[sevilla]
+name = "Sevilla FC"
+football_data = "Sevilla"
+fbref = ["Sevilla", "Sevilla FC"]
+understat = "Sevilla"
+clubelo = "Sevilla"
+
+[valencia]
+name = "Valencia CF"
+football_data = "Valencia"
+fbref = ["Valencia", "Valencia CF"]
+understat = "Valencia"
+clubelo = "Valencia"
+
+[valladolid]
+name = "Real Valladolid"
+football_data = "Valladolid"
+fbref = ["Valladolid", "Real Valladolid"]
+understat = "Real Valladolid"
+clubelo = "Valladolid"
+
+[villarreal]
+name = "Villarreal CF"
+football_data = "Villarreal"
+fbref = ["Villarreal", "Villarreal CF"]
+understat = "Villarreal"
+clubelo = "Villarreal"
+
+# --- Ascendidos a LaLiga 2026-27 (sin partidos en el histórico 2018-26 de
+# Primera; se incluyen para que su Elo y su registro existan desde ya y la
+# F7 los tenga disponibles) ---
+
+[racing-santander]
+name = "Real Racing Club"
+football_data = "Santander"
+fbref = ["Racing Santander", "Racing Sant", "Racing de Santander"]
+understat = "Racing Santander"
+clubelo = "Santander"
+
+[deportivo-la-coruna]
+name = "Deportivo de La Coruña"
+football_data = "La Coruna"
+fbref = ["La Coruña", "Deportivo La Coruña", "Dep La Coruña"]
+understat = "Deportivo La Coruna"
+clubelo = "Depor"

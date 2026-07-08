@@ -1,0 +1,58 @@
+# Configuración central del proyecto (CLAUDE.md §8: nada hardcodeado en código).
+# Las API keys van en .env, nunca aquí.
+
+[project]
+focus_team = "alaves"          # team_id canónico (ver config/teams.toml)
+current_season = "2026-27"
+
+[league]
+# LaLiga: 20 equipos -> 38 jornadas -> 380 partidos por temporada.
+# Parametrizado para que los tests puedan usar mini-ligas sintéticas.
+teams_per_season = 20
+
+[seasons]
+# Temporadas históricas de entrenamiento (SPEC §5): desde 2018-19 porque no hay
+# xG fiable antes; revisable por ADR.
+historical = [
+    "2018-19",
+    "2019-20",
+    "2020-21",
+    "2021-22",
+    "2022-23",
+    "2023-24",
+    "2024-25",
+    "2025-26",
+]
+
+[data]
+db_path = "data/alaves.db"
+raw_dir = "data/raw"           # cache local de descargas (ADR-004)
+
+[sources.football_data]
+# Columna vertebral: resultados, estadísticas básicas y cuotas (SPEC §3.1).
+base_url = "https://www.football-data.co.uk/mmz4281"
+division = "SP1"               # Primera División española
+rate_limit_seconds = 1.0
+
+[sources.fbref]
+# xG por partido y jornada oficial, de la página Scores & Fixtures (ADR-008).
+# Rate limit conservador: FBref pide moderación a los bots.
+base_url = "https://fbref.com/en/comps"
+competition_id = 12
+competition_slug = "La-Liga"
+rate_limit_seconds = 6.0
+
+[sources.understat]
+# Fuente de RELLENO de xG vía su API interna getLeagueData (ADR-011): cubre
+# los partidos donde FBref no aporta xG (su versión 2026 lo quitó de las
+# páginas de calendario) y será la fuente en vivo de la F7.
+base_url = "https://understat.com"
+league = "La liga"
+rate_limit_seconds = 3.0
+
+[sources.clubelo]
+# API CSV pública: http://api.clubelo.com/<Club> devuelve el histórico completo.
+base_url = "http://api.clubelo.com"
+rate_limit_seconds = 2.0
+# Solo se guardan ratings desde esta fecha (un mes antes de la primera temporada).
+history_start = "2018-07-01"

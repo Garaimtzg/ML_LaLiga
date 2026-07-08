@@ -1,0 +1,56 @@
+[project]
+name = "alaves-predictor"
+version = "0.1.0"
+description = "Predictor probabilístico de partidos del Deportivo Alavés — LaLiga 2026-27"
+readme = "README.md"
+requires-python = ">=3.11"
+# Política de dependencias (ADR-001): solo se añade una librería cuando la fase
+# que la usa se implementa. F1 (ETL): httpx, pydantic, typer,
+# beautifulsoup4 (parseo FBref, ADR-008) y curl-cffi (huella TLS, ADR-009).
+dependencies = [
+    "beautifulsoup4>=4.15.0",
+    "curl-cffi>=0.15.0",
+    "httpx>=0.27",
+    "pydantic>=2.5",
+    "typer>=0.12",
+]
+
+[project.scripts]
+alaves = "alaves_predictor.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/alaves_predictor"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errores
+    "W",   # pycodestyle avisos
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

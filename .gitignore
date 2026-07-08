@@ -1,0 +1,22 @@
+# Entornos y caches de Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Datos: nunca se commitean datos crudos ni la BD (CLAUDE.md §2).
+# Los fixtures de test viven en tests/fixtures/, fuera de data/.
+data/
+
+# Artefactos de modelos entrenados (pesados; el registry guarda métricas en BD)
+models/registry/
+
+# Secretos
+.env
+
+# Notebooks: checkpoints
+notebooks/.ipynb_checkpoints/
