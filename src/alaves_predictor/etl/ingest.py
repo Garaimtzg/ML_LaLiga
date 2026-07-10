@@ -479,18 +479,40 @@ def ingest_clubelo(
     registry: TeamRegistry,
     *,
     force: bool = False,
-) -> dict[str, int]:
-    """Descarga el histórico Elo de cada equipo del registro. Devuelve filas por equipo."""
+) -> tuple[dict[str, int], list[str]]:
+    """Carga el histórico Elo de cada equipo del registro.
+
+    Resiliencia (la BD manda, como en el xG):
+    - Si un equipo ya tiene Elo en la BD (y no hay --force), no se toca la red.
+    - Si ClubElo no responde para un equipo, se anota y se continúa: la
+      ingesta no muere por una fuente caída; `alaves validate` sigue siendo
+      el juez de si falta algo que importe.
+
+    Devuelve (filas en BD por equipo, equipos no descargables en esta pasada).
+    """
     cfg = settings.sources.clubelo
     history_start = date.fromisoformat(cfg.history_start)
     now = datetime.now(UTC).isoformat()
     rows_by_team: dict[str, int] = {}
+    unavailable: list[str] = []
 
     for team_id in registry.team_ids:
+        existing = conn.execute(
+            "SELECT COUNT(*) AS n FROM elo WHERE team_id = ?", (team_id,)
+        ).fetchone()["n"]
+        if existing and not force:
+            rows_by_team[team_id] = existing  # ya en BD: cero peticiones
+            continue
+
         alias = registry.alias(team_id, "clubelo")
         url = clubelo.club_url(alias, cfg)
         cache = settings.data.raw_dir / "clubelo" / f"{alias}.csv"
-        text = fetch_text(url, cache, rate_limit_seconds=cfg.rate_limit_seconds, force=force)
+        try:
+            text = fetch_text(url, cache, rate_limit_seconds=cfg.rate_limit_seconds, force=force)
+        except SourceDownloadError:
+            unavailable.append(team_id)
+            rows_by_team[team_id] = existing
+            continue
         ratings = clubelo.parse_csv(text, alias)
         inserted = 0
         for rating in ratings:
@@ -512,7 +534,7 @@ def ingest_clubelo(
             inserted += 1
         rows_by_team[team_id] = inserted
     conn.commit()
-    return rows_by_team
+    return rows_by_team, unavailable
 
 
 def ingest_historical(
@@ -552,5 +574,16 @@ def ingest_historical(
                 f"{season}: solo {n_xg}/{n_matches} partidos con xG (FBref + Understat)."
             )
 
-    report.elo_rows_by_team = ingest_clubelo(conn, settings, registry, force=force)
+    report.elo_rows_by_team, elo_unavailable = ingest_clubelo(conn, settings, registry, force=force)
+    if elo_unavailable:
+        sin_datos = [t for t in elo_unavailable if not report.elo_rows_by_team.get(t)]
+        detail = ", ".join(elo_unavailable)
+        report.warnings.append(
+            f"ClubElo no responde para: {detail}. Se reintentará en la próxima ingesta."
+            + (
+                f" ATENCIÓN: {', '.join(sin_datos)} no tiene(n) ningún Elo en la BD."
+                if sin_datos
+                else " (Todos conservan su Elo ya almacenado en la BD.)"
+            )
+        )
     return report
