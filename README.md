@@ -15,7 +15,7 @@ la clasificación final mediante simulación Monte Carlo.
 | Fase | Contenido | Estado |
 |------|-----------|--------|
 | **F1** | Setup del repo, entorno, ETL de datos históricos (2018-19 → 2025-26) | ✅ **Completada** — BD poblada y validada: 3.040 partidos, xG completo, 11.209 líneas de cuotas, 25.306 registros Elo de 30 clubes |
-| F2 | Feature engineering + baselines (Elo simple, cuotas implícitas) | Pendiente |
+| **F2** | Feature engineering + baselines (Elo simple, cuotas implícitas) | ✅ **Completada** — feature set v1 (~50 features, corte temporal estricto + test anti-leakage) y 3 baselines walk-forward |
 | F3 | Modelos (Dixon-Coles + LightGBM 1X2), calibración, backtesting | Pendiente |
 | F4 | Simulador Monte Carlo de la clasificación | Pendiente |
 | F5 | Explicabilidad (SHAP) y análisis de variables | Pendiente |
@@ -47,7 +47,7 @@ cd ~ && mkdir -p proyectos && cd proyectos
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (48 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (71 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
@@ -71,6 +71,8 @@ uv run alaves status             # resumen de filas por tabla y temporada
 | `uv run alaves ingest --historical` | ETL histórico completo (con cache; `--force` re-descarga) | ✅ F1 |
 | `uv run alaves validate` | Chequeos de integridad de la BD (falla con exit code ≠ 0) | ✅ F1 |
 | `uv run alaves status` | Filas por tabla y partidos por temporada | ✅ F1 |
+| `uv run alaves features` | Construye el feature set v1 (tabla `features` + Parquet) | ✅ F2 |
+| `uv run alaves baselines` | Evalúa los 3 baselines walk-forward e informa en `docs/reports/` | ✅ F2 |
 | `uv run alaves ingest --matchday N` | Ingesta post-jornada | F7 |
 | `uv run alaves train` | Entrenar Dixon-Coles + LightGBM + calibración | F3 |
 | `uv run alaves predict --next` | Predicciones de la próxima jornada | F3/F7 |
@@ -147,6 +149,8 @@ Identificadores legibles: `team_id = "alaves"`,
 │   ├── decisions/                    # ADRs (una decisión por archivo)
 │   └── reports/                      # informes de backtesting/importancia (F3+)
 ├── src/alaves_predictor/
+│   ├── features/                     # elo.py (Elo interno), form.py, build.py
+│   ├── evaluation/                   # metrics.py, baselines.py
 │   ├── config.py                     # carga tipada de la configuración
 │   ├── cli.py                        # CLI typer (`alaves ...`)
 │   └── etl/
@@ -160,7 +164,7 @@ Identificadores legibles: `team_id = "alaves"`,
 │           ├── fbref.py
 │           ├── understat.py          # xG de relleno vía API interna (ADR-011)
 │           └── clubelo.py
-└── tests/                            # 48 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 71 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)
@@ -178,6 +182,9 @@ Identificadores legibles: `team_id = "alaves"`,
 | [009](docs/decisions/009-transporte-tls-curl-cffi-para-fbref.md) | curl_cffi (huella TLS de Chrome) solo para FBref, cuyo Cloudflare rechaza clientes Python |
 | [010](docs/decisions/010-fallback-wayback-machine-para-fbref.md) | Cascada de descarga de FBref: cache → directo → Wayback Machine → snapshot manual |
 | [011](docs/decisions/011-understat-via-api-interna-como-relleno-de-xg.md) | Understat vuelve vía su endpoint interno getLeagueData como relleno de xG (y fuente en vivo para F7) |
+| [012](docs/decisions/012-feature-set-v1-y-dependencias-f2.md) | Feature set v1 (~50 features, as_of estricto); bloque técnico-táctico aplazado; deps de F2 |
+| [013](docs/decisions/013-elo-interno.md) | Elo interno clásico: K=20, ventaja 60, inicio 1500 (parámetros en config) |
+| [014](docs/decisions/014-baselines-y-evaluacion-walk-forward.md) | Baselines (frecuencias, Elo logístico, cuotas de cierre) y protocolo walk-forward |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 
@@ -189,10 +196,10 @@ Identificadores legibles: `team_id = "alaves"`,
 - **Honestidad estadística**: el objetivo es batir baselines y acercarse a las
   cuotas de mercado, no "acertar todo".
 
-## Próximos pasos (F2)
+## Próximos pasos (F3)
 
-1. Elo interno recalculable (factor K ajustable) para comparar con ClubElo.
-2. Features de forma (ventanas móviles 5/10), separadas local/visitante.
-3. Adaptador FBref → completar `match_stats`; Transfermarkt → `squad_values`.
-4. Baselines: frecuencias 1X2, Elo logístico, probabilidades implícitas de
-   cuotas de cierre; métricas log-loss / Brier / RPS.
+1. Dixon-Coles (Poisson bivariante con corrección ρ y ponderación temporal).
+2. LightGBM multiclase 1X2 sobre el feature set v1 (variantes con y sin cuotas).
+3. Calibración isotónica + reliability diagrams.
+4. Backtesting walk-forward completo contra los baselines de F2
+   (criterios de aceptación de SPEC §12).
