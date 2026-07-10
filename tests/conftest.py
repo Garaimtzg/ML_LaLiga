@@ -15,6 +15,7 @@ from alaves_predictor.config import (
     ClubEloConfig,
     DataConfig,
     FBrefConfig,
+    FeaturesConfig,
     FootballDataConfig,
     LeagueConfig,
     Settings,
@@ -66,7 +67,12 @@ def mini_settings(tmp_path: Path) -> Settings:
         current_season="2019-20",
         league=LeagueConfig(teams_per_season=4),
         historical_seasons=["2018-19"],
-        data=DataConfig(db_path=tmp_path / "test.db", raw_dir=tmp_path / "raw"),
+        data=DataConfig(
+            db_path=tmp_path / "test.db",
+            raw_dir=tmp_path / "raw",
+            features_dir=tmp_path / "features",
+        ),
+        features=FeaturesConfig(derbies=[["alaves", "real-sociedad"]]),
         sources=SourcesConfig(
             football_data=FootballDataConfig(
                 base_url="https://fd.test/mmz4281", rate_limit_seconds=0.0
