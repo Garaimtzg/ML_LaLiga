@@ -136,6 +136,61 @@ def validate() -> None:
     )
 
 
+@app.command()
+def features() -> None:
+    """Construye el feature set v1 y lo persiste (tabla features + Parquet)."""
+    settings = _load_settings()
+    if not settings.data.db_path.exists():
+        typer.secho("No existe la BD. Ejecuta `alaves ingest --historical` primero.", err=True)
+        raise typer.Exit(code=1)
+    from alaves_predictor.features.build import build_features, feature_columns, persist_features
+
+    conn = db.connect(settings.data.db_path)
+    try:
+        df = build_features(conn, settings)
+        parquet_path = persist_features(conn, df, settings)
+    finally:
+        conn.close()
+    version = settings.features.feature_set_version
+    typer.secho(
+        f"Feature set {version}: {len(df)} partidos × {len(feature_columns(df))} features.",
+        fg=typer.colors.GREEN,
+        bold=True,
+    )
+    typer.echo(f"  Persistido en tabla `features` y en {parquet_path}")
+
+
+@app.command()
+def baselines(
+    seasons: int = typer.Option(3, "--seasons", help="Temporadas de test (walk-forward)."),
+) -> None:
+    """Evalúa los 3 baselines de SPEC §6.1 e imprime/guarda el informe."""
+    settings = _load_settings()
+    if not settings.data.db_path.exists():
+        typer.secho("No existe la BD. Ejecuta `alaves ingest --historical` primero.", err=True)
+        raise typer.Exit(code=1)
+    from alaves_predictor.evaluation.baselines import run_baselines, write_report
+    from alaves_predictor.features.build import build_features
+
+    conn = db.connect(settings.data.db_path)
+    try:
+        df = build_features(conn, settings)
+        results = run_baselines(conn, df, settings, n_test_seasons=seasons)
+    finally:
+        conn.close()
+
+    typer.secho("Baselines (walk-forward):", bold=True)
+    for r in results:
+        m = r.metrics
+        typer.echo(
+            f"  {r.baseline:14s} {r.season}  n={r.n_matches:3d}  "
+            f"log-loss={m['log_loss']:.4f}  brier={m['brier']:.4f}  "
+            f"rps={m['rps']:.4f}  acc={m['accuracy']:.3f}"
+        )
+    report_path = write_report(results, Path("docs/reports"))
+    typer.echo(f"Informe guardado en {report_path}")
+
+
 def _stub(phase: str) -> None:
     typer.secho(f"Este comando se implementa en la {phase}.", fg=typer.colors.YELLOW)
     raise typer.Exit(code=1)
