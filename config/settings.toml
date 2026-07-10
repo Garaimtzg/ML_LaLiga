@@ -27,6 +27,37 @@ historical = [
 [data]
 db_path = "data/alaves.db"
 raw_dir = "data/raw"           # cache local de descargas (ADR-004)
+features_dir = "data/features" # snapshots Parquet del feature store (F2)
+
+[features]
+# Versión del conjunto de features (se registra en features.feature_set_version)
+feature_set_version = "v1"
+# Ventanas móviles de forma (nº de partidos anteriores)
+form_windows = [5, 10]
+# Temporadas jugadas (total o mayoritariamente) sin público -> flag no_crowd (SPEC §5)
+no_crowd_seasons = ["2020-21"]
+# Pares de derbi (ids canónicos); parametrizado, no hardcodeado (CLAUDE.md §8)
+derbies = [
+    ["alaves", "athletic-club"],
+    ["alaves", "real-sociedad"],
+    ["alaves", "osasuna"],
+    ["athletic-club", "real-sociedad"],
+    ["athletic-club", "osasuna"],
+    ["real-sociedad", "osasuna"],
+    ["real-madrid", "atletico-madrid"],
+    ["barcelona", "espanyol"],
+    ["sevilla", "betis"],
+    ["valencia", "levante"],
+    ["valencia", "villarreal"],
+    ["celta-vigo", "deportivo-la-coruna"],
+]
+
+[features.elo_internal]
+# Elo propio recalculable (ADR-013): fórmula estándar E = 1/(1+10^(-d/400)).
+# K y ventaja de campo son ajustables por validación en F3.
+k = 20.0
+home_advantage = 60.0   # en puntos Elo, sumados al local en el esperado
+initial_rating = 1500.0
 
 [sources.football_data]
 # Columna vertebral: resultados, estadísticas básicas y cuotas (SPEC §3.1).

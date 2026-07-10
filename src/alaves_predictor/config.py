@@ -30,6 +30,25 @@ class LeagueConfig(BaseModel):
 class DataConfig(BaseModel):
     db_path: Path
     raw_dir: Path
+    features_dir: Path = Path("data/features")
+
+
+class EloInternalConfig(BaseModel):
+    """Parámetros del Elo interno recalculable (ADR-013)."""
+
+    k: float = 20.0
+    home_advantage: float = 60.0  # puntos Elo sumados al local en el esperado
+    initial_rating: float = 1500.0
+
+
+class FeaturesConfig(BaseModel):
+    """Parámetros del feature store (F2, SPEC §4)."""
+
+    feature_set_version: str = "v1"
+    form_windows: list[int] = Field(default_factory=lambda: [5, 10])
+    no_crowd_seasons: list[str] = Field(default_factory=list)
+    derbies: list[list[str]] = Field(default_factory=list)
+    elo_internal: EloInternalConfig = Field(default_factory=EloInternalConfig)
 
 
 class FootballDataConfig(BaseModel):
@@ -95,6 +114,7 @@ class Settings(BaseModel):
     historical_seasons: list[str]
     data: DataConfig
     sources: SourcesConfig
+    features: FeaturesConfig = Field(default_factory=FeaturesConfig)
     teams: dict[str, TeamConfig]
 
 
@@ -118,5 +138,6 @@ def load_settings(config_dir: Path = Path("config")) -> Settings:
         historical_seasons=raw["seasons"]["historical"],
         data=DataConfig(**raw["data"]),
         sources=SourcesConfig(**raw["sources"]),
+        features=FeaturesConfig(**raw.get("features", {})),
         teams={team_id: TeamConfig(**cfg) for team_id, cfg in teams_raw.items()},
     )
