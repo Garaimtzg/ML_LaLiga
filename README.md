@@ -32,6 +32,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # reinicia la shell o: source ~/.local/bin/env
 ```
 
+- **libgomp** (runtime de OpenMP, lo usa LightGBM desde F3). En un Ubuntu de
+  WSL recién instalado no viene de serie; si `alaves train` falla con
+  `OSError: libgomp.so.1: cannot open shared object file`:
+
+```bash
+sudo apt-get update && sudo apt-get install -y libgomp1
+```
+
 ## Puesta en marcha (en tu WSL)
 
 > **Importante — dónde clonar**: clona dentro del sistema de archivos de WSL
