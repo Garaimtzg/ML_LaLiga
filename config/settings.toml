@@ -59,6 +59,42 @@ k = 20.0
 home_advantage = 60.0   # en puntos Elo, sumados al local en el esperado
 initial_rating = 1500.0
 
+[models]
+# Directorio de artefactos entrenados (gitignored; el registro con métricas
+# y config vive en la tabla model_registry de la BD).
+registry_dir = "models/registry"
+# Regla anti-sorpresa (SPEC §6.4): si el log-loss de validación de una nueva
+# versión empeora más de este porcentaje respecto a la última promocionada,
+# se alerta y NO se promociona automáticamente.
+max_logloss_regression = 0.10
+
+[models.dixon_coles]
+# Ponderación temporal exponencial (SPEC §6.2): peso = exp(-xi * días de
+# antigüedad). xi=0.0019/día => un partido de hace un año pesa ~0.5.
+xi = 0.0019
+# Truncamiento de la matriz de marcadores (P(>10 goles por equipo) ~ 0).
+max_goals = 10
+# Cota de |rho| (corrección de marcadores bajos): mantiene tau > 0.
+rho_bound = 0.2
+
+[models.lightgbm]
+# Hiperparámetros v1: valores conservadores documentados (ADR-016), sin búsqueda
+# automática todavía (optuna es opcional en SPEC §6.3). Pensados para ~3.000
+# filas: árboles poco profundos y aprendizaje lento contra el overfitting.
+n_estimators = 300
+learning_rate = 0.03
+num_leaves = 15
+min_child_samples = 50
+feature_fraction = 0.7
+bagging_fraction = 0.8
+bagging_freq = 1
+lambda_l2 = 1.0
+
+[models.ensemble]
+# Peso del Dixon-Coles en la media ponderada, buscado en rejilla [0,1] por
+# log-loss sobre la validación temporal (SPEC §6.3).
+weight_grid_step = 0.05
+
 [sources.football_data]
 # Columna vertebral: resultados, estadísticas básicas y cuotas (SPEC §3.1).
 base_url = "https://www.football-data.co.uk/mmz4281"
