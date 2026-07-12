@@ -42,6 +42,22 @@ def compute_internal_elo(matches: pd.DataFrame, cfg: EloInternalConfig) -> pd.Da
     for m in matches.itertuples(index=False):
         r_home = ratings.get(m.home_id, cfg.initial_rating)
         r_away = ratings.get(m.away_id, cfg.initial_rating)
+        if pd.isna(m.home_goals) or pd.isna(m.away_goals):
+            # partido sin jugar (predicción): se expone el rating PRE actual
+            # y no hay actualización — el POST queda nulo y no se persiste
+            rows.append(
+                {
+                    "match_id": m.match_id,
+                    "date": m.date,
+                    "home_id": m.home_id,
+                    "away_id": m.away_id,
+                    "elo_internal_home_pre": r_home,
+                    "elo_internal_away_pre": r_away,
+                    "elo_internal_home_post": None,
+                    "elo_internal_away_post": None,
+                }
+            )
+            continue
         expected = expected_home_score(r_home, r_away, cfg)
         if m.home_goals > m.away_goals:
             score = 1.0
@@ -80,6 +96,8 @@ def persist_internal_elo(conn: sqlite3.Connection, elo_history: pd.DataFrame) ->
             (row.home_id, row.elo_internal_home_post),
             (row.away_id, row.elo_internal_away_post),
         ):
+            if rating is None or pd.isna(rating):  # partido sin jugar: nada que persistir
+                continue
             db.upsert(
                 conn,
                 "elo",

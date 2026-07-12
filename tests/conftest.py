@@ -119,3 +119,78 @@ def mini_db(mini_settings: Settings) -> sqlite3.Connection:
     db.init_schema(conn)
     yield conn
     conn.close()
+
+
+def make_synthetic_features(n_seasons: int = 4, seed: int = 42):
+    """Frame de features sintético multi-temporada para los tests de modelos (F3).
+
+    Liga de 6 equipos con fuerzas conocidas; los goles se generan con el
+    proceso Dixon-Coles sin correlación. Incluye una feature informativa
+    (strength_diff), una de ruido y cuotas implícitas derivadas de las
+    probabilidades reales — suficiente para que LightGBM aprenda algo.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from alaves_predictor.models import dixon_coles as dc
+
+    rng = np.random.default_rng(seed)
+    teams = ["t1", "t2", "t3", "t4", "t5", "t6"]
+    # diferencias grandes a propósito: los tests de aprendizaje necesitan señal
+    attack = dict(zip(teams, [0.8, 0.4, 0.0, 0.0, -0.4, -0.8], strict=True))
+    defense = dict(zip(teams, [0.6, 0.3, 0.0, -0.3, 0.0, -0.6], strict=True))
+    gamma = 0.25
+    seasons = [f"{2018 + i}-{(19 + i) % 100:02d}" for i in range(n_seasons)]
+
+    rows = []
+    for s_idx, season in enumerate(seasons):
+        date = pd.Timestamp(f"{2018 + s_idx}-09-01")
+        # dos vueltas dobles por temporada: 60 partidos (más datos para aprender)
+        pairs = [(h, a) for h in teams for a in teams if h != a] * 2
+        rng.shuffle(pairs)
+        for i, (home, away) in enumerate(pairs):
+            lam = np.exp(attack[home] - defense[away] + gamma)
+            mu = np.exp(attack[away] - defense[home])
+            hg, ag = rng.poisson(lam), rng.poisson(mu)
+            true_probs = dc.outcome_probs(dc.score_matrix(lam, mu, 0.0, 8))
+            noisy = np.clip(true_probs + rng.normal(0, 0.02, 3), 0.02, None)
+            noisy = noisy / noisy.sum()
+            rows.append(
+                {
+                    "match_id": f"{season}_{home}_{away}",
+                    "season": season,
+                    "matchday": i // 3 + 1,
+                    "date": str((date + pd.Timedelta(days=i)).date()),
+                    "home_id": home,
+                    "away_id": away,
+                    "home_goals": hg,
+                    "away_goals": ag,
+                    "home_xg": lam,
+                    "away_xg": mu,
+                    "result": "H" if hg > ag else ("D" if hg == ag else "A"),
+                    "as_of_date": str((date + pd.Timedelta(days=i - 1)).date()),
+                    # features del "modelo": una informativa, una de ruido, cuotas
+                    "strength_diff": (attack[home] + defense[home])
+                    - (attack[away] + defense[away]),
+                    "noise": rng.normal(),
+                    "imp_home": noisy[0],
+                    "imp_draw": noisy[1],
+                    "imp_away": noisy[2],
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+@pytest.fixture()
+def synthetic_features():
+    return make_synthetic_features()
+
+
+@pytest.fixture()
+def model_settings(mini_settings: Settings) -> Settings:
+    """mini_settings con hiperparámetros adaptados al tamaño del dataset sintético."""
+    mini_settings.models.lightgbm.n_estimators = 80
+    mini_settings.models.lightgbm.min_child_samples = 5
+    # el registry de tests nunca debe escribir en el repo
+    mini_settings.models.registry_dir = mini_settings.data.db_path.parent / "registry"
+    return mini_settings

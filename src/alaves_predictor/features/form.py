@@ -8,6 +8,7 @@ El test anti-leakage de tests/test_features.py lo verifica empíricamente.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 # Estadísticas por equipo-partido sobre las que se calculan las medias móviles.
@@ -32,16 +33,17 @@ def long_format(matches: pd.DataFrame) -> pd.DataFrame:
                 "xg_against": matches[f"{other}_xg"],
             }
         )
-        df["points"] = df.apply(
-            lambda r: (
-                3
-                if r["goals_for"] > r["goals_against"]
-                else (1 if r["goals_for"] == r["goals_against"] else 0)
-            ),
-            axis=1,
+        # partidos sin jugar (goles NaN): puntos/won/lost quedan NaN para no
+        # contaminar ventanas ni rachas de partidos posteriores
+        played = df["goals_for"].notna() & df["goals_against"].notna()
+        points = np.where(
+            df["goals_for"] > df["goals_against"],
+            3.0,
+            np.where(df["goals_for"] == df["goals_against"], 1.0, 0.0),
         )
-        df["won"] = (df["goals_for"] > df["goals_against"]).astype(int)
-        df["lost"] = (df["goals_for"] < df["goals_against"]).astype(int)
+        df["points"] = np.where(played, points, np.nan)
+        df["won"] = np.where(played, (df["goals_for"] > df["goals_against"]).astype(float), np.nan)
+        df["lost"] = np.where(played, (df["goals_for"] < df["goals_against"]).astype(float), np.nan)
         return df
 
     long_df = pd.concat([side(True), side(False)], ignore_index=True)
@@ -79,12 +81,17 @@ def add_rest_days(long_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _streak_before(series: pd.Series) -> pd.Series:
-    """Racha de la estadística binaria ANTES de cada partido (0 si se rompió)."""
+    """Racha de la estadística binaria ANTES de cada partido (0 si se rompió).
+
+    Un partido sin jugar (NaN) no rompe ni alarga la racha: la mejor estimación
+    disponible para partidos posteriores es la racha actual.
+    """
     streaks: list[float] = []
     current = 0
     for value in series:
         streaks.append(current)
-        current = current + 1 if value == 1 else 0
+        if not pd.isna(value):
+            current = current + 1 if value == 1 else 0
     return pd.Series(streaks, index=series.index, dtype="Float64")
 
 
