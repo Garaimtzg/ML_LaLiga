@@ -27,16 +27,13 @@ import pandas as pd
 
 from alaves_predictor.config import Settings
 from alaves_predictor.evaluation import metrics
-from alaves_predictor.evaluation.baselines import (
-    BaselineResult,
-    fit_elo_logistic,
-    predict_elo_logistic,
-)
+from alaves_predictor.evaluation.baselines import BaselineResult
 from alaves_predictor.features.build import feature_columns
-from alaves_predictor.models import calibration, dixon_coles, ensemble, gbm_classifier
+from alaves_predictor.models import calibration, dixon_coles, ensemble, gbm_classifier, linear
 from alaves_predictor.models.gbm_classifier import VARIANT_WITH_ODDS, VARIANTS
 from alaves_predictor.models.train import (
     _calibrate_and_weigh,
+    calibrate_dc,
     choose_xi,
     dc_probs_for,
     fit_dc,
@@ -102,7 +99,10 @@ def run_backtest(
             continue  # sin temporadas previas no hay con qué calibrar ni entrenar
         # xi, calibradores y pesos del apilado: SOLO con temporadas < season
         xi = choose_xi(prior)
-        calib: dict[str, tuple] = {v: _calibrate_and_weigh(prior, v, step, xi) for v in variants}
+        dc_calibrators = calibrate_dc(prior, xi)
+        calib: dict[str, tuple] = {
+            v: _calibrate_and_weigh(prior, v, step, xi, dc_calibrators) for v in variants
+        }
 
         test = finished[finished["season"] == season]
         say(
@@ -119,9 +119,10 @@ def run_backtest(
         for group in _matchday_groups(test):
             train = finished[finished["date"] < group["date"].min()]
             dc_model = fit_dc(train, settings, xi=xi, warm_start=dc_model)
-            dc_probs = dc_probs_for(dc_model, group)
+            dc_probs = dc_probs_for(dc_model, group)  # crudo: fila del modelo DC y fallback
             collected[MODEL_DC].append(dc_probs)
-            elo_lr_probs = predict_elo_logistic(fit_elo_logistic(train), group)
+            dc_cal = calibration.apply_isotonic(dc_calibrators, dc_probs)
+            linear_probs = linear.predict_linear(linear.fit_linear(train), group)
             for v in variants:
                 cols = gbm_classifier.variant_features(all_cols, v)
                 gbm = gbm_classifier.fit(train, cols, settings.models.lightgbm, v)
@@ -130,13 +131,11 @@ def run_backtest(
                     calibrators, gbm_classifier.predict_proba(gbm, group)
                 )
                 third = (
-                    market_probs(group, fallback=dc_probs)
-                    if v == VARIANT_WITH_ODDS
-                    else elo_lr_probs
+                    market_probs(group, fallback=dc_cal) if v == VARIANT_WITH_ODDS else linear_probs
                 )
                 collected[f"lgbm_{v}"].append(gbm_cal)
                 collected[f"ensemble_{v}"].append(
-                    ensemble.blend_many([dc_probs, gbm_cal, third], weights)
+                    ensemble.blend_many([dc_cal, gbm_cal, third], weights)
                 )
             y_true.extend(group["result"])
             frames.append(group)

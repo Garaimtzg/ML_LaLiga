@@ -12,9 +12,13 @@ Flujo de `train_models` (ADR-017 y ADR-019):
 4. Reentrenamiento final de todos los componentes con TODA la historia
    (calibradores y pesos del paso 2 se conservan).
 
-El ensemble es un apilado de 3 componentes por variante (ADR-019):
-    con_cuotas: Dixon-Coles + LightGBM calibrado + mercado (apertura)
-    sin_cuotas: Dixon-Coles + LightGBM calibrado + Elo logístico
+El ensemble es un apilado de 3 componentes por variante (ADR-019/020):
+    con_cuotas: Dixon-Coles calibrado + LightGBM calibrado + mercado (apertura)
+    sin_cuotas: Dixon-Coles calibrado + LightGBM calibrado + lineal Elo+forma
+
+El Dixon-Coles se calibra como componente (isotónica sobre el pool) porque el
+modelo clásico infraestima empates (ADR-020); su versión cruda se conserva
+para el marcador más probable y como métrica interpretable.
 
 El registro (ADR-018) guarda el artefacto en models/registry/<versión>/ y una
 fila en la tabla model_registry, y aplica la regla anti-sorpresa de SPEC §6.4:
@@ -33,23 +37,23 @@ from datetime import UTC, datetime
 import numpy as np
 import pandas as pd
 from sklearn.isotonic import IsotonicRegression
-from sklearn.linear_model import LogisticRegression
 
 from alaves_predictor.config import Settings
-from alaves_predictor.evaluation import baselines, metrics
+from alaves_predictor.evaluation import metrics
 from alaves_predictor.features.build import MARKET_COLS, feature_columns
-from alaves_predictor.models import calibration, dixon_coles, ensemble, gbm_classifier
+from alaves_predictor.models import calibration, dixon_coles, ensemble, gbm_classifier, linear
 from alaves_predictor.models.gbm_classifier import (
     VARIANT_NO_ODDS,
     VARIANT_WITH_ODDS,
     VARIANTS,
     GBMModel,
 )
+from alaves_predictor.models.linear import LinearModel
 
-# Componentes del ensemble apilado por variante (ADR-019), en orden fijo.
+# Componentes del ensemble apilado por variante (ADR-019/020), en orden fijo.
 COMPONENTS = {
     VARIANT_WITH_ODDS: ["dixon_coles", "lightgbm", "mercado_apertura"],
-    VARIANT_NO_ODDS: ["dixon_coles", "lightgbm", "elo_logistico"],
+    VARIANT_NO_ODDS: ["dixon_coles", "lightgbm", "lineal_elo_forma"],
 }
 
 
@@ -62,7 +66,7 @@ class SeasonPredictions:
     dc_by_xi: dict[float, np.ndarray]  # probabilidades del DC por candidato de xi
     gbm: dict[str, np.ndarray]  # por variante, sin calibrar
     market: np.ndarray  # probabilidades implícitas de apertura
-    elo_lr: np.ndarray  # Elo logístico ajustado con las temporadas de train
+    linear: np.ndarray  # logística Elo+forma ajustada con las temporadas de train
 
 
 @dataclass
@@ -74,13 +78,11 @@ class VariantModel:
     component_names: list[str]
     weights: np.ndarray  # mismo orden que component_names; suman 1
 
-    def ensemble_probs(
-        self, df: pd.DataFrame, dc_probs: np.ndarray, third: np.ndarray
-    ) -> np.ndarray:
+    def ensemble_probs(self, df: pd.DataFrame, dc_cal: np.ndarray, third: np.ndarray) -> np.ndarray:
         gbm_cal = calibration.apply_isotonic(
             self.calibrators, gbm_classifier.predict_proba(self.gbm, df)
         )
-        return ensemble.blend_many([dc_probs, gbm_cal, third], self.weights)
+        return ensemble.blend_many([dc_cal, gbm_cal, third], self.weights)
 
 
 @dataclass
@@ -92,24 +94,24 @@ class ModelBundle:
     trained_at: str
     train_window: str
     dixon_coles: dixon_coles.DixonColesModel
-    elo_lr: LogisticRegression
+    dc_calibrators: list[IsotonicRegression]  # calibración del DC como componente
+    linear: LinearModel
     variants: dict[str, VariantModel]
     val_metrics: dict  # métricas walk-forward de la última temporada
     val_season: str
     xi: float  # xi elegido por validación (ADR-019)
 
-    def _third_component(
-        self, rows: pd.DataFrame, variant: str, dc_probs: np.ndarray
-    ) -> np.ndarray:
+    def _third_component(self, rows: pd.DataFrame, variant: str, dc_cal: np.ndarray) -> np.ndarray:
         if variant == VARIANT_WITH_ODDS:
-            return market_probs(rows, fallback=dc_probs)
-        return baselines.predict_elo_logistic(self.elo_lr, rows)
+            return market_probs(rows, fallback=dc_cal)
+        return linear.predict_linear(self.linear, rows)
 
     def predict_matches(self, rows: pd.DataFrame, variant: str) -> pd.DataFrame:
         """Predicción completa por partido: P(1X2) del apilado + marcador del DC."""
-        dc_probs = dc_probs_for(self.dixon_coles, rows)
-        third = self._third_component(rows, variant, dc_probs)
-        probs = self.variants[variant].ensemble_probs(rows, dc_probs, third)
+        dc_raw = dc_probs_for(self.dixon_coles, rows)
+        dc_cal = calibration.apply_isotonic(self.dc_calibrators, dc_raw)
+        third = self._third_component(rows, variant, dc_cal)
+        probs = self.variants[variant].ensemble_probs(rows, dc_cal, third)
         records = []
         for i, m in enumerate(rows.itertuples(index=False)):
             lam, mu = self.dixon_coles.expected_goals(m.home_id, m.away_id)
@@ -188,7 +190,7 @@ def season_walkforward(
                 dc_by_xi=dc_by_xi,
                 gbm=gbm_probs,
                 market=market_probs(test, fallback=dc_by_xi[xi_candidates[0]]),
-                elo_lr=baselines.elo_logistic_probs(train, test),
+                linear=linear.predict_linear(linear.fit_linear(train), test),
             )
         )
     return out
@@ -207,23 +209,35 @@ def choose_xi(preds: list[SeasonPredictions]) -> float:
 def _pool(
     preds: list[SeasonPredictions], variant: str, xi: float
 ) -> tuple[list[str], list[np.ndarray]]:
-    """Concatena el pool walk-forward: (y_true, [dc, gbm_sin_calibrar, tercero])."""
+    """Concatena el pool walk-forward: (y_true, [dc_crudo, gbm_sin_calibrar, tercero])."""
     y = [label for p in preds for label in p.y_true]
     dc = np.vstack([p.dc_by_xi[xi] for p in preds])
     gbm = np.vstack([p.gbm[variant] for p in preds])
-    third_attr = "market" if variant == VARIANT_WITH_ODDS else "elo_lr"
+    third_attr = "market" if variant == VARIANT_WITH_ODDS else "linear"
     third = np.vstack([getattr(p, third_attr) for p in preds])
     return y, [dc, gbm, third]
 
 
+def calibrate_dc(preds: list[SeasonPredictions], xi: float) -> list[IsotonicRegression]:
+    """Calibradores isotónicos del Dixon-Coles sobre el pool out-of-fold (ADR-020)."""
+    y = [label for p in preds for label in p.y_true]
+    dc = np.vstack([p.dc_by_xi[xi] for p in preds])
+    return calibration.fit_isotonic(dc, y)
+
+
 def _calibrate_and_weigh(
-    preds: list[SeasonPredictions], variant: str, step: float, xi: float
+    preds: list[SeasonPredictions],
+    variant: str,
+    step: float,
+    xi: float,
+    dc_calibrators: list[IsotonicRegression],
 ) -> tuple[list[IsotonicRegression], np.ndarray]:
-    """Calibradores isotónicos + pesos del apilado a partir del pool out-of-fold."""
+    """Calibradores del LightGBM + pesos del apilado a partir del pool out-of-fold."""
     y, (dc, gbm, third) = _pool(preds, variant, xi)
+    dc_cal = calibration.apply_isotonic(dc_calibrators, dc)
     calibrators = calibration.fit_isotonic(gbm, y)
     gbm_cal = calibration.apply_isotonic(calibrators, gbm)
-    weights = ensemble.optimal_weights([dc, gbm_cal, third], y, step)
+    weights = ensemble.optimal_weights([dc_cal, gbm_cal, third], y, step)
     return calibrators, weights
 
 
@@ -252,16 +266,21 @@ def train_models(
         "dixon_coles": metrics.evaluate(val.y_true, val.dc_by_xi[xi_val]),
         "xi": xi_val,
     }
+    if prior:
+        dc_cal_val = calibrate_dc(prior, xi_val)
+        dc_val = calibration.apply_isotonic(dc_cal_val, val.dc_by_xi[xi_val])
+    else:
+        dc_cal_val, dc_val = [], val.dc_by_xi[xi_val]
     for variant in variants:
-        third = val.market if variant == VARIANT_WITH_ODDS else val.elo_lr
+        third = val.market if variant == VARIANT_WITH_ODDS else val.linear
         if prior:
-            cal_v, weights_v = _calibrate_and_weigh(prior, variant, step, xi_val)
+            cal_v, weights_v = _calibrate_and_weigh(prior, variant, step, xi_val, dc_cal_val)
             gbm_val = calibration.apply_isotonic(cal_v, val.gbm[variant])
         else:
             # con solo 2 temporadas no hay pool previo: sin calibrar, pesos iguales
             gbm_val = val.gbm[variant]
             weights_v = np.full(3, 1.0 / 3.0)
-        ens_val = ensemble.blend_many([val.dc_by_xi[xi_val], gbm_val, third], weights_v)
+        ens_val = ensemble.blend_many([dc_val, gbm_val, third], weights_v)
         val_metrics[variant] = {
             "lgbm": metrics.evaluate(val.y_true, gbm_val),
             "ensemble": metrics.evaluate(val.y_true, ens_val),
@@ -274,10 +293,11 @@ def train_models(
     xi_final = choose_xi(oof)
     all_cols = feature_columns(finished)
     dc_final = fit_dc(finished, settings, xi=xi_final)
-    elo_lr_final = baselines.fit_elo_logistic(finished)
+    dc_calibrators = calibrate_dc(oof, xi_final)
+    linear_final = linear.fit_linear(finished)
     bundle_variants: dict[str, VariantModel] = {}
     for variant in variants:
-        calibrators, weights = _calibrate_and_weigh(oof, variant, step, xi_final)
+        calibrators, weights = _calibrate_and_weigh(oof, variant, step, xi_final, dc_calibrators)
         cols = gbm_classifier.variant_features(all_cols, variant)
         gbm_final = gbm_classifier.fit(finished, cols, settings.models.lightgbm, variant)
         bundle_variants[variant] = VariantModel(
@@ -294,7 +314,8 @@ def train_models(
         trained_at=now.isoformat(timespec="seconds"),
         train_window=f"{seasons[0]}..{seasons[-1]}",
         dixon_coles=dc_final,
-        elo_lr=elo_lr_final,
+        dc_calibrators=dc_calibrators,
+        linear=linear_final,
         variants=bundle_variants,
         val_metrics=val_metrics,
         val_season=val.season,

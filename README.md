@@ -165,12 +165,14 @@ Tres piezas que se combinan (SPEC §6, ADRs 015-018):
    v1, en dos variantes: **con cuotas** (techo de rendimiento) y **sin cuotas**
    (la que se interpretará con SHAP en F5).
 3. **Calibración isotónica + ensemble apilado** (`models/calibration.py`,
-   `models/ensemble.py`, ADR-019): las probabilidades del LightGBM se calibran
-   por clase sobre predicciones walk-forward (nunca sobre el entrenamiento) y
-   se apilan con otros dos componentes — Dixon-Coles y, según la variante, el
-   mercado de apertura (con cuotas) o el Elo logístico (sin cuotas) — con
-   pesos elegidos por log-loss en validación. El ξ de la ponderación temporal
-   del Dixon-Coles también se elige por validación en una rejilla.
+   `models/ensemble.py`, `models/linear.py`, ADR-019/020): las probabilidades
+   del LightGBM y del Dixon-Coles se calibran por clase sobre predicciones
+   walk-forward (nunca sobre el entrenamiento) y se apilan con un tercer
+   componente — el mercado de apertura (con cuotas) o una logística Elo+forma
+   (sin cuotas) — con pesos elegidos por log-loss en validación. El ξ de la
+   ponderación temporal del Dixon-Coles también se elige por validación en una
+   rejilla. La calibración se desactiva sola con pocos datos (evita
+   sobreajuste).
 
 Cada `alaves train` guarda el artefacto en `models/registry/<versión>/`
 (gitignored) y una fila auditable en la tabla `model_registry`. **Regla
@@ -201,7 +203,7 @@ log-loss) y ensemble con cuotas ≤ cuotas de cierre + 0.01 (~0.964).
 ├── src/alaves_predictor/
 │   ├── features/                     # elo.py (Elo interno), form.py, build.py
 │   ├── models/                       # dixon_coles.py, gbm_classifier.py,
-│   │                                 # calibration.py, ensemble.py, train.py
+│   │                                 # calibration.py, ensemble.py, linear.py, train.py
 │   ├── evaluation/                   # metrics.py, baselines.py, backtest.py
 │   ├── config.py                     # carga tipada de la configuración
 │   ├── cli.py                        # CLI typer (`alaves ...`)
@@ -242,6 +244,7 @@ log-loss) y ensemble con cuotas ≤ cuotas de cierre + 0.01 (~0.964).
 | [017](docs/decisions/017-calibracion-y-ensemble.md) | Calibración isotónica sobre folds temporales (suelo 1 %) + ensemble ponderado por log-loss |
 | [018](docs/decisions/018-backtest-y-registro.md) | Backtest jornada a jornada, registro de modelos y regla anti-sorpresa del 10 % |
 | [019](docs/decisions/019-ensemble-apilado-y-xi-por-validacion.md) | Ensemble apilado de 3 componentes (DC + GBM + mercado/Elo) y ξ elegido por validación |
+| [020](docs/decisions/020-componente-lineal-y-calibracion-dc.md) | Componente lineal Elo+forma, calibración del Dixon-Coles y guarda de calibración con pocos datos |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 

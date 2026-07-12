@@ -35,8 +35,31 @@ def _one_hot(y_true: list[str]) -> np.ndarray:
     return out
 
 
+# Mínimo de muestras para fiarse de la isotónica: por debajo sobreajusta (una
+# función escalonada con pocos puntos memoriza el ruido) y, si sus pesos se
+# eligen sobre ese mismo pool, generaliza mal. Con menos, se pasa el crudo.
+_MIN_CALIBRATION_SAMPLES = 300
+
+
+def _identity_calibrators() -> list[IsotonicRegression]:
+    """Calibradores que devuelven la probabilidad tal cual (recta y=x)."""
+    anchor = np.array([0.0, 1.0])
+    out = []
+    for _ in OUTCOME_ORDER:
+        iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+        iso.fit(anchor, anchor)
+        out.append(iso)
+    return out
+
+
 def fit_isotonic(probs: np.ndarray, y_true: list[str]) -> list[IsotonicRegression]:
-    """Ajusta un calibrador por clase (orden H/D/A) sobre predicciones de validación."""
+    """Ajusta un calibrador por clase (orden H/D/A) sobre predicciones de validación.
+
+    Con menos de `_MIN_CALIBRATION_SAMPLES` puntos devuelve calibradores
+    identidad: no hay muestra para calibrar con seguridad (ADR-020).
+    """
+    if len(y_true) < _MIN_CALIBRATION_SAMPLES:
+        return _identity_calibrators()
     targets = _one_hot(y_true)
     calibrators = []
     for k in range(len(OUTCOME_ORDER)):

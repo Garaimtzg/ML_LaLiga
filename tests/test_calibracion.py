@@ -26,6 +26,15 @@ def test_la_calibracion_corrige_la_sobreconfianza():
     assert log_loss(y_true, calibrated) < log_loss(y_true, probs)
 
 
+def test_pocas_muestras_devuelven_calibradores_identidad():
+    """Con un pool pequeño no se calibra (evita sobreajuste): pasa el crudo (ADR-020)."""
+    probs, y_true = _overconfident_dataset(n=100)  # < _MIN_CALIBRATION_SAMPLES
+    calibrators = calibration.fit_isotonic(probs, y_true)
+    calibrated = calibration.apply_isotonic(calibrators, probs)
+    # identidad + renormalización: como la fila ya suma 1, no cambia nada
+    assert calibrated == pytest.approx(np.asarray(probs, dtype=float))
+
+
 def test_apply_devuelve_distribuciones_validas():
     probs, y_true = _overconfident_dataset()
     calibrators = calibration.fit_isotonic(probs, y_true)
