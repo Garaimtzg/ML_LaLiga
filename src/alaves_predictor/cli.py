@@ -242,11 +242,13 @@ def train(
         bold=True,
     )
     _echo_metrics("dixon_coles", bundle.val_metrics["dixon_coles"])
+    typer.echo(f"    (xi de ponderación temporal elegido en validación: {bundle.xi})")
     for variant in variants:
         vm = bundle.val_metrics[variant]
         _echo_metrics(f"lgbm_{variant}", vm["lgbm"])
         _echo_metrics(f"ensemble_{variant}", vm["ensemble"])
-        typer.echo(f"    (peso del Dixon-Coles en el ensemble: {vm['dc_weight']:.2f})")
+        weights = ", ".join(f"{name}={w:.2f}" for name, w in vm["weights"].items())
+        typer.echo(f"    (pesos del apilado: {weights})")
     if decision.promoted:
         typer.secho(f"Promocionado: {decision.reason}.", fg=typer.colors.GREEN, bold=True)
     else:

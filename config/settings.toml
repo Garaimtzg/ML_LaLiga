@@ -71,7 +71,10 @@ max_logloss_regression = 0.10
 [models.dixon_coles]
 # Ponderación temporal exponencial (SPEC §6.2): peso = exp(-xi * días de
 # antigüedad). xi=0.0019/día => un partido de hace un año pesa ~0.5.
+# Se usa como valor por defecto; si xi_grid tiene varios valores, el xi
+# definitivo se elige por log-loss en validación walk-forward (ADR-019).
 xi = 0.0019
+xi_grid = [0.0005, 0.001, 0.0019, 0.0035]
 # Truncamiento de la matriz de marcadores (P(>10 goles por equipo) ~ 0).
 max_goals = 10
 # Cota de |rho| (corrección de marcadores bajos): mantiene tau > 0.

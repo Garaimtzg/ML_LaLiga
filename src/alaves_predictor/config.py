@@ -52,11 +52,17 @@ class FeaturesConfig(BaseModel):
 
 
 class DixonColesConfig(BaseModel):
-    """Parámetros del modelo Dixon-Coles (SPEC §6.2, ADR-015)."""
+    """Parámetros del modelo Dixon-Coles (SPEC §6.2, ADR-015/019)."""
 
     xi: float = 0.0019  # ponderación temporal: peso = exp(-xi · días)
     max_goals: int = 10  # truncamiento de la matriz de marcadores
     rho_bound: float = 0.2  # cota de |rho| para que tau se mantenga > 0
+    # candidatos de xi evaluados en validación walk-forward (ADR-019);
+    # vacío o con un único valor => se usa `xi` sin selección
+    xi_grid: list[float] = Field(default_factory=list)
+
+    def xi_candidates(self) -> list[float]:
+        return list(self.xi_grid) if self.xi_grid else [self.xi]
 
 
 class LightGBMConfig(BaseModel):

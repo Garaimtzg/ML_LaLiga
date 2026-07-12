@@ -172,6 +172,11 @@ def make_synthetic_features(n_seasons: int = 4, seed: int = 42):
                     # features del "modelo": una informativa, una de ruido, cuotas
                     "strength_diff": (attack[home] + defense[home])
                     - (attack[away] + defense[away]),
+                    # proxy de Elo: fuerza real a escala Elo con algo de ruido
+                    # (la usa el componente elo_logistico del ensemble apilado)
+                    "elo_clubelo_diff": 200.0
+                    * ((attack[home] + defense[home]) - (attack[away] + defense[away]))
+                    + rng.normal(0, 20),
                     "noise": rng.normal(),
                     "imp_home": noisy[0],
                     "imp_draw": noisy[1],

@@ -27,14 +27,20 @@ import pandas as pd
 
 from alaves_predictor.config import Settings
 from alaves_predictor.evaluation import metrics
-from alaves_predictor.evaluation.baselines import BaselineResult
+from alaves_predictor.evaluation.baselines import (
+    BaselineResult,
+    fit_elo_logistic,
+    predict_elo_logistic,
+)
 from alaves_predictor.features.build import feature_columns
 from alaves_predictor.models import calibration, dixon_coles, ensemble, gbm_classifier
-from alaves_predictor.models.gbm_classifier import VARIANTS
+from alaves_predictor.models.gbm_classifier import VARIANT_WITH_ODDS, VARIANTS
 from alaves_predictor.models.train import (
     _calibrate_and_weigh,
+    choose_xi,
     dc_probs_for,
     fit_dc,
+    market_probs,
     season_walkforward,
 )
 
@@ -94,10 +100,14 @@ def run_backtest(
         prior = [p for p in oof if p.season < season]
         if not prior:
             continue  # sin temporadas previas no hay con qué calibrar ni entrenar
-        calib: dict[str, tuple] = {v: _calibrate_and_weigh(prior, v, step) for v in variants}
+        # xi, calibradores y pesos del apilado: SOLO con temporadas < season
+        xi = choose_xi(prior)
+        calib: dict[str, tuple] = {v: _calibrate_and_weigh(prior, v, step, xi) for v in variants}
 
         test = finished[finished["season"] == season]
-        say(f"Temporada {season}: {len(test)} partidos, reentrenando jornada a jornada...")
+        say(
+            f"Temporada {season}: {len(test)} partidos (xi={xi}), reentrenando jornada a jornada..."
+        )
         collected: dict[str, list[np.ndarray]] = {MODEL_DC: []}
         for v in variants:
             collected[f"lgbm_{v}"] = []
@@ -108,18 +118,26 @@ def run_backtest(
 
         for group in _matchday_groups(test):
             train = finished[finished["date"] < group["date"].min()]
-            dc_model = fit_dc(train, settings, warm_start=dc_model)
+            dc_model = fit_dc(train, settings, xi=xi, warm_start=dc_model)
             dc_probs = dc_probs_for(dc_model, group)
             collected[MODEL_DC].append(dc_probs)
+            elo_lr_probs = predict_elo_logistic(fit_elo_logistic(train), group)
             for v in variants:
                 cols = gbm_classifier.variant_features(all_cols, v)
                 gbm = gbm_classifier.fit(train, cols, settings.models.lightgbm, v)
-                calibrators, dc_weight = calib[v]
+                calibrators, weights = calib[v]
                 gbm_cal = calibration.apply_isotonic(
                     calibrators, gbm_classifier.predict_proba(gbm, group)
                 )
+                third = (
+                    market_probs(group, fallback=dc_probs)
+                    if v == VARIANT_WITH_ODDS
+                    else elo_lr_probs
+                )
                 collected[f"lgbm_{v}"].append(gbm_cal)
-                collected[f"ensemble_{v}"].append(ensemble.blend(dc_probs, gbm_cal, dc_weight))
+                collected[f"ensemble_{v}"].append(
+                    ensemble.blend_many([dc_probs, gbm_cal, third], weights)
+                )
             y_true.extend(group["result"])
             frames.append(group)
 

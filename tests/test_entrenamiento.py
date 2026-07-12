@@ -16,9 +16,15 @@ def test_train_models_produce_un_bundle_completo(synthetic_features, model_setti
     assert set(bundle.variants) == {VARIANT_WITH_ODDS, VARIANT_NO_ODDS}
     assert bundle.val_season == "2021-22"  # la última temporada del sintético
     for variant, vm in bundle.variants.items():
-        assert 0.0 <= vm.dc_weight <= 1.0
+        # apilado de 3 componentes (ADR-019): pesos en el símplex
+        assert len(vm.weights) == len(vm.component_names) == 3
+        assert np.all(vm.weights >= 0)
+        assert vm.weights.sum() == pytest.approx(1.0)
         assert len(vm.calibrators) == 3
         assert "ensemble" in bundle.val_metrics[variant]
+        assert set(bundle.val_metrics[variant]["weights"]) == set(vm.component_names)
+    # el xi definitivo sale de la rejilla de candidatos
+    assert bundle.xi in model_settings.models.dixon_coles.xi_candidates()
     # el train final ve todas las temporadas
     assert bundle.train_window == "2018-19..2021-22"
 

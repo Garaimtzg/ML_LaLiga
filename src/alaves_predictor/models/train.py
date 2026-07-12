@@ -1,15 +1,20 @@
 """Entrenamiento, validación temporal, registro y carga de modelos (SPEC §6.3-§6.4).
 
-Flujo de `train_models` (ADR-017):
+Flujo de `train_models` (ADR-017 y ADR-019):
 
 1. Predicciones walk-forward por temporada: cada temporada se predice con
    modelos entrenados SOLO con temporadas anteriores (folds temporales).
-2. Con ese pool out-of-fold se ajustan los calibradores isotónicos del
-   LightGBM y el peso del ensemble — nunca con datos vistos en entrenamiento.
+2. Con ese pool out-of-fold se eligen: el xi del Dixon-Coles (rejilla por
+   log-loss), los calibradores isotónicos del LightGBM y los pesos del
+   ensemble apilado — nunca con datos vistos en entrenamiento.
 3. Las métricas de validación se calculan sobre la ÚLTIMA temporada, con
-   calibradores/pesos ajustados solo con las temporadas previas a ella.
-4. Reentrenamiento final de Dixon-Coles y LightGBM con TODA la historia
-   (los calibradores y pesos del paso 2 se conservan).
+   todo lo anterior ajustado SOLO con las temporadas previas a ella.
+4. Reentrenamiento final de todos los componentes con TODA la historia
+   (calibradores y pesos del paso 2 se conservan).
+
+El ensemble es un apilado de 3 componentes por variante (ADR-019):
+    con_cuotas: Dixon-Coles + LightGBM calibrado + mercado (apertura)
+    sin_cuotas: Dixon-Coles + LightGBM calibrado + Elo logístico
 
 El registro (ADR-018) guarda el artefacto en models/registry/<versión>/ y una
 fila en la tabla model_registry, y aplica la regla anti-sorpresa de SPEC §6.4:
@@ -28,12 +33,24 @@ from datetime import UTC, datetime
 import numpy as np
 import pandas as pd
 from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
 
 from alaves_predictor.config import Settings
-from alaves_predictor.evaluation import metrics
-from alaves_predictor.features.build import feature_columns
+from alaves_predictor.evaluation import baselines, metrics
+from alaves_predictor.features.build import MARKET_COLS, feature_columns
 from alaves_predictor.models import calibration, dixon_coles, ensemble, gbm_classifier
-from alaves_predictor.models.gbm_classifier import VARIANTS, GBMModel
+from alaves_predictor.models.gbm_classifier import (
+    VARIANT_NO_ODDS,
+    VARIANT_WITH_ODDS,
+    VARIANTS,
+    GBMModel,
+)
+
+# Componentes del ensemble apilado por variante (ADR-019), en orden fijo.
+COMPONENTS = {
+    VARIANT_WITH_ODDS: ["dixon_coles", "lightgbm", "mercado_apertura"],
+    VARIANT_NO_ODDS: ["dixon_coles", "lightgbm", "elo_logistico"],
+}
 
 
 @dataclass
@@ -42,23 +59,28 @@ class SeasonPredictions:
 
     season: str
     y_true: list[str]
-    dc: np.ndarray  # probabilidades [H, D, A] del Dixon-Coles
+    dc_by_xi: dict[float, np.ndarray]  # probabilidades del DC por candidato de xi
     gbm: dict[str, np.ndarray]  # por variante, sin calibrar
+    market: np.ndarray  # probabilidades implícitas de apertura
+    elo_lr: np.ndarray  # Elo logístico ajustado con las temporadas de train
 
 
 @dataclass
 class VariantModel:
-    """Una variante completa: LightGBM + su calibración + su peso de ensemble."""
+    """Una variante completa: LightGBM + calibración + pesos del apilado."""
 
     gbm: GBMModel
     calibrators: list[IsotonicRegression]
-    dc_weight: float
+    component_names: list[str]
+    weights: np.ndarray  # mismo orden que component_names; suman 1
 
-    def ensemble_probs(self, df: pd.DataFrame, dc_probs: np.ndarray) -> np.ndarray:
+    def ensemble_probs(
+        self, df: pd.DataFrame, dc_probs: np.ndarray, third: np.ndarray
+    ) -> np.ndarray:
         gbm_cal = calibration.apply_isotonic(
             self.calibrators, gbm_classifier.predict_proba(self.gbm, df)
         )
-        return ensemble.blend(dc_probs, gbm_cal, self.dc_weight)
+        return ensemble.blend_many([dc_probs, gbm_cal, third], self.weights)
 
 
 @dataclass
@@ -70,14 +92,24 @@ class ModelBundle:
     trained_at: str
     train_window: str
     dixon_coles: dixon_coles.DixonColesModel
+    elo_lr: LogisticRegression
     variants: dict[str, VariantModel]
     val_metrics: dict  # métricas walk-forward de la última temporada
     val_season: str
+    xi: float  # xi elegido por validación (ADR-019)
+
+    def _third_component(
+        self, rows: pd.DataFrame, variant: str, dc_probs: np.ndarray
+    ) -> np.ndarray:
+        if variant == VARIANT_WITH_ODDS:
+            return market_probs(rows, fallback=dc_probs)
+        return baselines.predict_elo_logistic(self.elo_lr, rows)
 
     def predict_matches(self, rows: pd.DataFrame, variant: str) -> pd.DataFrame:
-        """Predicción completa por partido: P(1X2) del ensemble + marcador del DC."""
+        """Predicción completa por partido: P(1X2) del apilado + marcador del DC."""
         dc_probs = dc_probs_for(self.dixon_coles, rows)
-        probs = self.variants[variant].ensemble_probs(rows, dc_probs)
+        third = self._third_component(rows, variant, dc_probs)
+        probs = self.variants[variant].ensemble_probs(rows, dc_probs, third)
         records = []
         for i, m in enumerate(rows.itertuples(index=False)):
             lam, mu = self.dixon_coles.expected_goals(m.home_id, m.away_id)
@@ -102,16 +134,29 @@ class ModelBundle:
         return pd.DataFrame(records)
 
 
-def fit_dc(train: pd.DataFrame, settings: Settings, **kwargs) -> dixon_coles.DixonColesModel:
+def fit_dc(
+    train: pd.DataFrame, settings: Settings, xi: float | None = None, **kwargs
+) -> dixon_coles.DixonColesModel:
     """Ajusta el Dixon-Coles sobre las columnas de partido del frame de features."""
+    cfg = settings.models.dixon_coles
+    if xi is not None:
+        cfg = cfg.model_copy(update={"xi": xi})
     cols = ["home_id", "away_id", "home_goals", "away_goals", "date"]
-    return dixon_coles.fit(train[cols], settings.models.dixon_coles, **kwargs)
+    return dixon_coles.fit(train[cols], cfg, **kwargs)
 
 
 def dc_probs_for(model: dixon_coles.DixonColesModel, df: pd.DataFrame) -> np.ndarray:
     return np.vstack(
         [model.outcome_probs(h, a) for h, a in zip(df["home_id"], df["away_id"], strict=True)]
     )
+
+
+def market_probs(df: pd.DataFrame, fallback: np.ndarray) -> np.ndarray:
+    """Probabilidades implícitas de apertura; sin cuotas, cae al fallback (DC)."""
+    probs = df[MARKET_COLS].astype("Float64").to_numpy(dtype="float64", na_value=np.nan)
+    missing = np.isnan(probs).any(axis=1)
+    probs[missing] = np.asarray(fallback, dtype=float)[missing]
+    return probs
 
 
 def season_walkforward(
@@ -121,11 +166,16 @@ def season_walkforward(
 ) -> list[SeasonPredictions]:
     """Predice cada temporada (desde la 2ª) con modelos entrenados solo con las previas."""
     all_cols = feature_columns(features)
+    xi_candidates = settings.models.dixon_coles.xi_candidates()
     out: list[SeasonPredictions] = []
     for season in sorted(set(features["season"]))[1:]:
         train = features[features["season"] < season]
         test = features[features["season"] == season]
-        dc_model = fit_dc(train, settings)
+        dc_by_xi: dict[float, np.ndarray] = {}
+        previous: dixon_coles.DixonColesModel | None = None
+        for xi in xi_candidates:
+            previous = fit_dc(train, settings, xi=xi, warm_start=previous)
+            dc_by_xi[xi] = dc_probs_for(previous, test)
         gbm_probs = {}
         for variant in variants:
             cols = gbm_classifier.variant_features(all_cols, variant)
@@ -135,29 +185,46 @@ def season_walkforward(
             SeasonPredictions(
                 season=season,
                 y_true=list(test["result"]),
-                dc=dc_probs_for(dc_model, test),
+                dc_by_xi=dc_by_xi,
                 gbm=gbm_probs,
+                market=market_probs(test, fallback=dc_by_xi[xi_candidates[0]]),
+                elo_lr=baselines.elo_logistic_probs(train, test),
             )
         )
     return out
 
 
-def _pool(preds: list[SeasonPredictions], variant: str) -> tuple[list[str], np.ndarray, np.ndarray]:
-    """Concatena las predicciones walk-forward de varias temporadas."""
+def choose_xi(preds: list[SeasonPredictions]) -> float:
+    """xi con mejor log-loss medio sobre el pool walk-forward (ADR-019)."""
+    candidates = list(preds[0].dc_by_xi)
+    losses = {
+        xi: float(np.mean([metrics.log_loss(p.y_true, p.dc_by_xi[xi]) for p in preds]))
+        for xi in candidates
+    }
+    return min(losses, key=losses.get)  # type: ignore[arg-type]
+
+
+def _pool(
+    preds: list[SeasonPredictions], variant: str, xi: float
+) -> tuple[list[str], list[np.ndarray]]:
+    """Concatena el pool walk-forward: (y_true, [dc, gbm_sin_calibrar, tercero])."""
     y = [label for p in preds for label in p.y_true]
-    dc = np.vstack([p.dc for p in preds])
+    dc = np.vstack([p.dc_by_xi[xi] for p in preds])
     gbm = np.vstack([p.gbm[variant] for p in preds])
-    return y, dc, gbm
+    third_attr = "market" if variant == VARIANT_WITH_ODDS else "elo_lr"
+    third = np.vstack([getattr(p, third_attr) for p in preds])
+    return y, [dc, gbm, third]
 
 
 def _calibrate_and_weigh(
-    preds: list[SeasonPredictions], variant: str, step: float
-) -> tuple[list[IsotonicRegression], float]:
-    """Calibradores isotónicos + peso del ensemble a partir de un pool out-of-fold."""
-    y, dc, gbm = _pool(preds, variant)
+    preds: list[SeasonPredictions], variant: str, step: float, xi: float
+) -> tuple[list[IsotonicRegression], np.ndarray]:
+    """Calibradores isotónicos + pesos del apilado a partir del pool out-of-fold."""
+    y, (dc, gbm, third) = _pool(preds, variant, xi)
     calibrators = calibration.fit_isotonic(gbm, y)
     gbm_cal = calibration.apply_isotonic(calibrators, gbm)
-    return calibrators, ensemble.optimal_weight(dc, gbm_cal, y, step)
+    weights = ensemble.optimal_weights([dc, gbm_cal, third], y, step)
+    return calibrators, weights
 
 
 def train_models(
@@ -174,33 +241,51 @@ def train_models(
             f"(hay {len(seasons)}). Ejecuta `alaves ingest --historical` primero."
         )
     step = settings.models.ensemble.weight_grid_step
+    default_xi = settings.models.dixon_coles.xi_candidates()[0]
     oof = season_walkforward(finished, settings, variants)
 
     # --- métricas de validación: última temporada, sin verse a sí misma ---
     val, prior = oof[-1], oof[:-1]
-    val_metrics: dict[str, dict] = {"dixon_coles": metrics.evaluate(val.y_true, val.dc)}
+    xi_val = choose_xi(prior) if prior else default_xi
+    # valores: dicts de métricas por modelo, salvo "xi" (el candidato elegido)
+    val_metrics: dict = {
+        "dixon_coles": metrics.evaluate(val.y_true, val.dc_by_xi[xi_val]),
+        "xi": xi_val,
+    }
     for variant in variants:
+        third = val.market if variant == VARIANT_WITH_ODDS else val.elo_lr
         if prior:
-            cal_v, weight_v = _calibrate_and_weigh(prior, variant, step)
+            cal_v, weights_v = _calibrate_and_weigh(prior, variant, step, xi_val)
             gbm_val = calibration.apply_isotonic(cal_v, val.gbm[variant])
         else:
-            # con solo 2 temporadas no hay pool previo: métricas sin calibrar
-            gbm_val, weight_v = val.gbm[variant], 0.5
+            # con solo 2 temporadas no hay pool previo: sin calibrar, pesos iguales
+            gbm_val = val.gbm[variant]
+            weights_v = np.full(3, 1.0 / 3.0)
+        ens_val = ensemble.blend_many([val.dc_by_xi[xi_val], gbm_val, third], weights_v)
         val_metrics[variant] = {
             "lgbm": metrics.evaluate(val.y_true, gbm_val),
-            "ensemble": metrics.evaluate(val.y_true, ensemble.blend(val.dc, gbm_val, weight_v)),
-            "dc_weight": weight_v,
+            "ensemble": metrics.evaluate(val.y_true, ens_val),
+            "weights": dict(
+                zip(COMPONENTS[variant], [round(float(w), 3) for w in weights_v], strict=True)
+            ),
         }
 
-    # --- calibradores/pesos definitivos (todo el pool) + reentreno final ---
+    # --- selección/ajuste definitivos (todo el pool) + reentreno final ---
+    xi_final = choose_xi(oof)
     all_cols = feature_columns(finished)
-    dc_final = fit_dc(finished, settings)
+    dc_final = fit_dc(finished, settings, xi=xi_final)
+    elo_lr_final = baselines.fit_elo_logistic(finished)
     bundle_variants: dict[str, VariantModel] = {}
     for variant in variants:
-        calibrators, dc_weight = _calibrate_and_weigh(oof, variant, step)
+        calibrators, weights = _calibrate_and_weigh(oof, variant, step, xi_final)
         cols = gbm_classifier.variant_features(all_cols, variant)
         gbm_final = gbm_classifier.fit(finished, cols, settings.models.lightgbm, variant)
-        bundle_variants[variant] = VariantModel(gbm_final, calibrators, dc_weight)
+        bundle_variants[variant] = VariantModel(
+            gbm=gbm_final,
+            calibrators=calibrators,
+            component_names=COMPONENTS[variant],
+            weights=weights,
+        )
 
     now = datetime.now(UTC)
     return ModelBundle(
@@ -209,9 +294,11 @@ def train_models(
         trained_at=now.isoformat(timespec="seconds"),
         train_window=f"{seasons[0]}..{seasons[-1]}",
         dixon_coles=dc_final,
+        elo_lr=elo_lr_final,
         variants=bundle_variants,
         val_metrics=val_metrics,
         val_season=val.season,
+        xi=xi_final,
     )
 
 
@@ -220,7 +307,7 @@ def train_models(
 # Variante cuyo log-loss de ensemble sirve de referencia para la regla
 # anti-sorpresa: sin_cuotas, porque se entrena SIEMPRE (con --no-odds y sin él)
 # y así la comparación entre versiones es homogénea.
-_REFERENCE_VARIANT = gbm_classifier.VARIANT_NO_ODDS
+_REFERENCE_VARIANT = VARIANT_NO_ODDS
 
 
 @dataclass
@@ -275,6 +362,7 @@ def register_model(
     config_payload = {
         "feature_set_version": bundle.feature_set_version,
         "variants": list(bundle.variants),
+        "xi": bundle.xi,
         "models": settings.models.model_dump(mode="json"),
     }
     (artifact_dir / "metrics.json").write_text(

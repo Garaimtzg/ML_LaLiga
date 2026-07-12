@@ -25,6 +25,25 @@ def test_optimal_weight_elige_al_modelo_bueno():
     assert ensemble.optimal_weight(awful, perfect, y_true) == pytest.approx(0.0)
 
 
+def test_optimal_weights_apilado_de_tres():
+    y_true = ["H", "A", "D", "H"]
+    perfect = np.array([[1, 0, 0], [0, 0, 1], [0, 1, 0], [1, 0, 0]], dtype=float)
+    awful = np.array([[0, 0, 1], [1, 0, 0], [1, 0, 0], [0, 0, 1]], dtype=float)
+    uniform = np.full((4, 3), 1 / 3)
+    weights = ensemble.optimal_weights([awful, perfect, uniform], y_true)
+    # todo el peso al componente perfecto; el símplex suma 1
+    assert weights == pytest.approx([0.0, 1.0, 0.0])
+    assert weights.sum() == pytest.approx(1.0)
+
+
+def test_blend_many_es_media_ponderada():
+    a = np.array([[0.6, 0.2, 0.2]])
+    b = np.array([[0.2, 0.2, 0.6]])
+    c = np.array([[0.2, 0.6, 0.2]])
+    out = ensemble.blend_many([a, b, c], np.array([0.5, 0.25, 0.25]))
+    assert out[0] == pytest.approx([0.4, 0.3, 0.3])
+
+
 def test_el_ensemble_nunca_es_peor_que_sus_partes_en_validacion():
     from alaves_predictor.evaluation.metrics import log_loss
 
