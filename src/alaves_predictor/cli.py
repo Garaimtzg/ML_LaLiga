@@ -242,7 +242,9 @@ def train(
         bold=True,
     )
     _echo_metrics("dixon_coles", bundle.val_metrics["dixon_coles"])
-    typer.echo(f"    (xi de ponderación temporal elegido en validación: {bundle.xi})")
+    typer.echo(
+        f"    (elegidos en validación: xi={bundle.xi} para el DC, C={bundle.c} para el lineal)"
+    )
     for variant in variants:
         vm = bundle.val_metrics[variant]
         _echo_metrics(f"lgbm_{variant}", vm["lgbm"])

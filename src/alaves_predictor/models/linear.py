@@ -55,12 +55,17 @@ def _design(df: pd.DataFrame) -> pd.DataFrame:
     return design.fillna({c: 0.0 for c in design.columns[design.isna().all()]})
 
 
-def fit_linear(train: pd.DataFrame) -> LinearModel:
-    """Ajusta la logística sobre partidos con resultado conocido."""
+def fit_linear(train: pd.DataFrame, c: float = 1.0) -> LinearModel:
+    """Ajusta la logística sobre partidos con resultado conocido.
+
+    `c` es el inverso de la fuerza de regularización L2. Con las features
+    estandarizadas, un C bajo encoge en exceso la señal Elo (ADR-021); se
+    elige por validación walk-forward.
+    """
     pipeline = make_pipeline(
         SimpleImputer(strategy="median"),
         StandardScaler(),
-        LogisticRegression(max_iter=2000),  # L2 con C=1.0, el default de sklearn
+        LogisticRegression(max_iter=2000, C=c),
     )
     pipeline.fit(_design(train), train["result"])
     return LinearModel(pipeline=pipeline)

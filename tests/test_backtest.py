@@ -13,6 +13,7 @@ def test_run_backtest_evalua_todos_los_modelos(synthetic_features, model_setting
     models = {r.model for r in output.rows}
     assert models == {
         "dixon_coles",
+        "lineal_elo_forma",
         "lgbm_con_cuotas",
         "lgbm_sin_cuotas",
         "ensemble_con_cuotas",

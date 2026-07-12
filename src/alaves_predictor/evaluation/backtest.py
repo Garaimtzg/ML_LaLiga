@@ -34,6 +34,7 @@ from alaves_predictor.models.gbm_classifier import VARIANT_WITH_ODDS, VARIANTS
 from alaves_predictor.models.train import (
     _calibrate_and_weigh,
     calibrate_dc,
+    choose_c,
     choose_xi,
     dc_probs_for,
     fit_dc,
@@ -42,6 +43,7 @@ from alaves_predictor.models.train import (
 )
 
 MODEL_DC = "dixon_coles"
+MODEL_LINEAR = "lineal_elo_forma"
 
 
 @dataclass
@@ -97,18 +99,20 @@ def run_backtest(
         prior = [p for p in oof if p.season < season]
         if not prior:
             continue  # sin temporadas previas no hay con qué calibrar ni entrenar
-        # xi, calibradores y pesos del apilado: SOLO con temporadas < season
+        # xi, C, calibradores y pesos del apilado: SOLO con temporadas < season
         xi = choose_xi(prior)
+        c = choose_c(prior)
         dc_calibrators = calibrate_dc(prior, xi)
         calib: dict[str, tuple] = {
-            v: _calibrate_and_weigh(prior, v, step, xi, dc_calibrators) for v in variants
+            v: _calibrate_and_weigh(prior, v, step, xi, c, dc_calibrators) for v in variants
         }
 
         test = finished[finished["season"] == season]
         say(
-            f"Temporada {season}: {len(test)} partidos (xi={xi}), reentrenando jornada a jornada..."
+            f"Temporada {season}: {len(test)} partidos (xi={xi}, C={c}), "
+            "reentrenando jornada a jornada..."
         )
-        collected: dict[str, list[np.ndarray]] = {MODEL_DC: []}
+        collected: dict[str, list[np.ndarray]] = {MODEL_DC: [], MODEL_LINEAR: []}
         for v in variants:
             collected[f"lgbm_{v}"] = []
             collected[f"ensemble_{v}"] = []
@@ -122,7 +126,8 @@ def run_backtest(
             dc_probs = dc_probs_for(dc_model, group)  # crudo: fila del modelo DC y fallback
             collected[MODEL_DC].append(dc_probs)
             dc_cal = calibration.apply_isotonic(dc_calibrators, dc_probs)
-            linear_probs = linear.predict_linear(linear.fit_linear(train), group)
+            linear_probs = linear.predict_linear(linear.fit_linear(train, c=c), group)
+            collected[MODEL_LINEAR].append(linear_probs)
             for v in variants:
                 cols = gbm_classifier.variant_features(all_cols, v)
                 gbm = gbm_classifier.fit(train, cols, settings.models.lightgbm, v)

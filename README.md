@@ -245,6 +245,7 @@ log-loss) y ensemble con cuotas ≤ cuotas de cierre + 0.01 (~0.964).
 | [018](docs/decisions/018-backtest-y-registro.md) | Backtest jornada a jornada, registro de modelos y regla anti-sorpresa del 10 % |
 | [019](docs/decisions/019-ensemble-apilado-y-xi-por-validacion.md) | Ensemble apilado de 3 componentes (DC + GBM + mercado/Elo) y ξ elegido por validación |
 | [020](docs/decisions/020-componente-lineal-y-calibracion-dc.md) | Componente lineal Elo+forma, calibración del Dixon-Coles y guarda de calibración con pocos datos |
+| [021](docs/decisions/021-regularizacion-del-lineal-por-validacion.md) | Regularización (C) del componente lineal elegida por validación + componente lineal visible en el backtest |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 

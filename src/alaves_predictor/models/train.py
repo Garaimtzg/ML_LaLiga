@@ -66,7 +66,7 @@ class SeasonPredictions:
     dc_by_xi: dict[float, np.ndarray]  # probabilidades del DC por candidato de xi
     gbm: dict[str, np.ndarray]  # por variante, sin calibrar
     market: np.ndarray  # probabilidades implícitas de apertura
-    linear: np.ndarray  # logística Elo+forma ajustada con las temporadas de train
+    linear_by_c: dict[float, np.ndarray]  # logística Elo+forma por candidato de C
 
 
 @dataclass
@@ -100,6 +100,7 @@ class ModelBundle:
     val_metrics: dict  # métricas walk-forward de la última temporada
     val_season: str
     xi: float  # xi elegido por validación (ADR-019)
+    c: float = 1.0  # C del lineal elegido por validación (ADR-021)
 
     def _third_component(self, rows: pd.DataFrame, variant: str, dc_cal: np.ndarray) -> np.ndarray:
         if variant == VARIANT_WITH_ODDS:
@@ -169,6 +170,7 @@ def season_walkforward(
     """Predice cada temporada (desde la 2ª) con modelos entrenados solo con las previas."""
     all_cols = feature_columns(features)
     xi_candidates = settings.models.dixon_coles.xi_candidates()
+    c_candidates = settings.models.linear.c_candidates()
     out: list[SeasonPredictions] = []
     for season in sorted(set(features["season"]))[1:]:
         train = features[features["season"] < season]
@@ -178,6 +180,9 @@ def season_walkforward(
         for xi in xi_candidates:
             previous = fit_dc(train, settings, xi=xi, warm_start=previous)
             dc_by_xi[xi] = dc_probs_for(previous, test)
+        linear_by_c = {
+            c: linear.predict_linear(linear.fit_linear(train, c=c), test) for c in c_candidates
+        }
         gbm_probs = {}
         for variant in variants:
             cols = gbm_classifier.variant_features(all_cols, variant)
@@ -190,31 +195,43 @@ def season_walkforward(
                 dc_by_xi=dc_by_xi,
                 gbm=gbm_probs,
                 market=market_probs(test, fallback=dc_by_xi[xi_candidates[0]]),
-                linear=linear.predict_linear(linear.fit_linear(train), test),
+                linear_by_c=linear_by_c,
             )
         )
     return out
 
 
-def choose_xi(preds: list[SeasonPredictions]) -> float:
-    """xi con mejor log-loss medio sobre el pool walk-forward (ADR-019)."""
-    candidates = list(preds[0].dc_by_xi)
+def _choose_by_loss(preds: list[SeasonPredictions], attr: str) -> float:
+    """Candidato (xi o C) con mejor log-loss medio sobre el pool walk-forward."""
+    by_candidate: dict[float, np.ndarray] = getattr(preds[0], attr)
     losses = {
-        xi: float(np.mean([metrics.log_loss(p.y_true, p.dc_by_xi[xi]) for p in preds]))
-        for xi in candidates
+        cand: float(np.mean([metrics.log_loss(p.y_true, getattr(p, attr)[cand]) for p in preds]))
+        for cand in by_candidate
     }
     return min(losses, key=losses.get)  # type: ignore[arg-type]
 
 
+def choose_xi(preds: list[SeasonPredictions]) -> float:
+    """xi con mejor log-loss medio sobre el pool walk-forward (ADR-019)."""
+    return _choose_by_loss(preds, "dc_by_xi")
+
+
+def choose_c(preds: list[SeasonPredictions]) -> float:
+    """C (regularización del lineal) con mejor log-loss medio en el pool (ADR-021)."""
+    return _choose_by_loss(preds, "linear_by_c")
+
+
 def _pool(
-    preds: list[SeasonPredictions], variant: str, xi: float
+    preds: list[SeasonPredictions], variant: str, xi: float, c: float
 ) -> tuple[list[str], list[np.ndarray]]:
     """Concatena el pool walk-forward: (y_true, [dc_crudo, gbm_sin_calibrar, tercero])."""
     y = [label for p in preds for label in p.y_true]
     dc = np.vstack([p.dc_by_xi[xi] for p in preds])
     gbm = np.vstack([p.gbm[variant] for p in preds])
-    third_attr = "market" if variant == VARIANT_WITH_ODDS else "linear"
-    third = np.vstack([getattr(p, third_attr) for p in preds])
+    if variant == VARIANT_WITH_ODDS:
+        third = np.vstack([p.market for p in preds])
+    else:
+        third = np.vstack([p.linear_by_c[c] for p in preds])
     return y, [dc, gbm, third]
 
 
@@ -230,10 +247,11 @@ def _calibrate_and_weigh(
     variant: str,
     step: float,
     xi: float,
+    c: float,
     dc_calibrators: list[IsotonicRegression],
 ) -> tuple[list[IsotonicRegression], np.ndarray]:
     """Calibradores del LightGBM + pesos del apilado a partir del pool out-of-fold."""
-    y, (dc, gbm, third) = _pool(preds, variant, xi)
+    y, (dc, gbm, third) = _pool(preds, variant, xi, c)
     dc_cal = calibration.apply_isotonic(dc_calibrators, dc)
     calibrators = calibration.fit_isotonic(gbm, y)
     gbm_cal = calibration.apply_isotonic(calibrators, gbm)
@@ -256,15 +274,18 @@ def train_models(
         )
     step = settings.models.ensemble.weight_grid_step
     default_xi = settings.models.dixon_coles.xi_candidates()[0]
+    default_c = settings.models.linear.c_candidates()[0]
     oof = season_walkforward(finished, settings, variants)
 
     # --- métricas de validación: última temporada, sin verse a sí misma ---
     val, prior = oof[-1], oof[:-1]
     xi_val = choose_xi(prior) if prior else default_xi
-    # valores: dicts de métricas por modelo, salvo "xi" (el candidato elegido)
+    c_val = choose_c(prior) if prior else default_c
+    # valores: dicts de métricas por modelo, salvo "xi"/"c" (candidatos elegidos)
     val_metrics: dict = {
         "dixon_coles": metrics.evaluate(val.y_true, val.dc_by_xi[xi_val]),
         "xi": xi_val,
+        "c": c_val,
     }
     if prior:
         dc_cal_val = calibrate_dc(prior, xi_val)
@@ -272,9 +293,9 @@ def train_models(
     else:
         dc_cal_val, dc_val = [], val.dc_by_xi[xi_val]
     for variant in variants:
-        third = val.market if variant == VARIANT_WITH_ODDS else val.linear
+        third = val.market if variant == VARIANT_WITH_ODDS else val.linear_by_c[c_val]
         if prior:
-            cal_v, weights_v = _calibrate_and_weigh(prior, variant, step, xi_val, dc_cal_val)
+            cal_v, weights_v = _calibrate_and_weigh(prior, variant, step, xi_val, c_val, dc_cal_val)
             gbm_val = calibration.apply_isotonic(cal_v, val.gbm[variant])
         else:
             # con solo 2 temporadas no hay pool previo: sin calibrar, pesos iguales
@@ -291,13 +312,16 @@ def train_models(
 
     # --- selección/ajuste definitivos (todo el pool) + reentreno final ---
     xi_final = choose_xi(oof)
+    c_final = choose_c(oof)
     all_cols = feature_columns(finished)
     dc_final = fit_dc(finished, settings, xi=xi_final)
     dc_calibrators = calibrate_dc(oof, xi_final)
-    linear_final = linear.fit_linear(finished)
+    linear_final = linear.fit_linear(finished, c=c_final)
     bundle_variants: dict[str, VariantModel] = {}
     for variant in variants:
-        calibrators, weights = _calibrate_and_weigh(oof, variant, step, xi_final, dc_calibrators)
+        calibrators, weights = _calibrate_and_weigh(
+            oof, variant, step, xi_final, c_final, dc_calibrators
+        )
         cols = gbm_classifier.variant_features(all_cols, variant)
         gbm_final = gbm_classifier.fit(finished, cols, settings.models.lightgbm, variant)
         bundle_variants[variant] = VariantModel(
@@ -320,6 +344,7 @@ def train_models(
         val_metrics=val_metrics,
         val_season=val.season,
         xi=xi_final,
+        c=c_final,
     )
 
 
@@ -384,6 +409,7 @@ def register_model(
         "feature_set_version": bundle.feature_set_version,
         "variants": list(bundle.variants),
         "xi": bundle.xi,
+        "c": bundle.c,
         "models": settings.models.model_dump(mode="json"),
     }
     (artifact_dir / "metrics.json").write_text(

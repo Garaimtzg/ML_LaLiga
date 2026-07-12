@@ -78,6 +78,18 @@ class LightGBMConfig(BaseModel):
     lambda_l2: float = 1.0
 
 
+class LinearConfig(BaseModel):
+    """Componente lineal Elo+forma del ensemble sin cuotas (ADR-020/021)."""
+
+    c: float = 1.0  # inverso de la regularización L2 por defecto
+    # candidatos de C evaluados en validación walk-forward (ADR-021); con las
+    # features estandarizadas, C bajo encoge la señal Elo — hay que buscarlo
+    c_grid: list[float] = Field(default_factory=lambda: [0.3, 1.0, 3.0, 10.0, 30.0])
+
+    def c_candidates(self) -> list[float]:
+        return list(self.c_grid) if self.c_grid else [self.c]
+
+
 class EnsembleConfig(BaseModel):
     weight_grid_step: float = 0.05
 
@@ -89,6 +101,7 @@ class ModelsConfig(BaseModel):
     max_logloss_regression: float = 0.10  # regla anti-sorpresa (SPEC §6.4)
     dixon_coles: DixonColesConfig = Field(default_factory=DixonColesConfig)
     lightgbm: LightGBMConfig = Field(default_factory=LightGBMConfig)
+    linear: LinearConfig = Field(default_factory=LinearConfig)
     ensemble: EnsembleConfig = Field(default_factory=EnsembleConfig)
 
 
