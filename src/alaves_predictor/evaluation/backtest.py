@@ -32,8 +32,8 @@ from alaves_predictor.features.build import feature_columns
 from alaves_predictor.models import calibration, dixon_coles, ensemble, gbm_classifier, linear
 from alaves_predictor.models.gbm_classifier import VARIANT_WITH_ODDS, VARIANTS
 from alaves_predictor.models.train import (
+    _N_COMPONENTS,
     _calibrate_and_weigh,
-    calibrate_dc,
     choose_c,
     choose_xi,
     dc_probs_for,
@@ -99,13 +99,11 @@ def run_backtest(
         prior = [p for p in oof if p.season < season]
         if not prior:
             continue  # sin temporadas previas no hay con qué calibrar ni entrenar
-        # xi, C, calibradores y pesos del apilado: SOLO con temporadas < season
+        # xi, C, calibradores por componente y pesos del apilado: SOLO con
+        # temporadas < season (leave-one-season-out para los pesos, ADR-022)
         xi = choose_xi(prior)
         c = choose_c(prior)
-        dc_calibrators = calibrate_dc(prior, xi)
-        calib: dict[str, tuple] = {
-            v: _calibrate_and_weigh(prior, v, step, xi, c, dc_calibrators) for v in variants
-        }
+        calib: dict[str, tuple] = {v: _calibrate_and_weigh(prior, v, step, xi, c) for v in variants}
 
         test = finished[finished["season"] == season]
         say(
@@ -123,25 +121,30 @@ def run_backtest(
         for group in _matchday_groups(test):
             train = finished[finished["date"] < group["date"].min()]
             dc_model = fit_dc(train, settings, xi=xi, warm_start=dc_model)
-            dc_probs = dc_probs_for(dc_model, group)  # crudo: fila del modelo DC y fallback
+            dc_probs = dc_probs_for(dc_model, group)  # crudo: fila del modelo DC
             collected[MODEL_DC].append(dc_probs)
-            dc_cal = calibration.apply_isotonic(dc_calibrators, dc_probs)
+            gbm_raw = {}
+            for v in variants:
+                cols = gbm_classifier.variant_features(all_cols, v)
+                model = gbm_classifier.fit(train, cols, settings.models.lightgbm, v)
+                gbm_raw[v] = gbm_classifier.predict_proba(model, group)
             linear_probs = linear.predict_linear(linear.fit_linear(train, c=c), group)
             collected[MODEL_LINEAR].append(linear_probs)
             for v in variants:
-                cols = gbm_classifier.variant_features(all_cols, v)
-                gbm = gbm_classifier.fit(train, cols, settings.models.lightgbm, v)
-                calibrators, weights = calib[v]
-                gbm_cal = calibration.apply_isotonic(
-                    calibrators, gbm_classifier.predict_proba(gbm, group)
-                )
-                third = (
-                    market_probs(group, fallback=dc_cal) if v == VARIANT_WITH_ODDS else linear_probs
-                )
-                collected[f"lgbm_{v}"].append(gbm_cal)
-                collected[f"ensemble_{v}"].append(
-                    ensemble.blend_many([dc_cal, gbm_cal, third], weights)
-                )
+                component_calibrators, weights = calib[v]
+                # tercer componente crudo: mercado (con cuotas) o lineal (sin cuotas)
+                if v == VARIANT_WITH_ODDS:
+                    dc_cal = calibration.apply_isotonic(component_calibrators[0], dc_probs)
+                    third_raw = market_probs(group, fallback=dc_cal)
+                else:
+                    third_raw = linear_probs
+                comps_raw = [dc_probs, gbm_raw[v], third_raw]
+                comps_cal = [
+                    calibration.apply_isotonic(component_calibrators[k], comps_raw[k])
+                    for k in range(_N_COMPONENTS)
+                ]
+                collected[f"lgbm_{v}"].append(comps_cal[1])
+                collected[f"ensemble_{v}"].append(ensemble.blend_many(comps_cal, weights))
             y_true.extend(group["result"])
             frames.append(group)
 

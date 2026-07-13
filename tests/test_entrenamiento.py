@@ -20,7 +20,8 @@ def test_train_models_produce_un_bundle_completo(synthetic_features, model_setti
         assert len(vm.weights) == len(vm.component_names) == 3
         assert np.all(vm.weights >= 0)
         assert vm.weights.sum() == pytest.approx(1.0)
-        assert len(vm.calibrators) == 3
+        # un calibrador isotónico por componente: [dc, lightgbm, tercero]
+        assert len(vm.component_calibrators) == 3
         assert "ensemble" in bundle.val_metrics[variant]
         assert set(bundle.val_metrics[variant]["weights"]) == set(vm.component_names)
     # el xi definitivo sale de la rejilla de candidatos
