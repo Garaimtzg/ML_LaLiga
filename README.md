@@ -16,7 +16,7 @@ la clasificación final mediante simulación Monte Carlo.
 |------|-----------|--------|
 | **F1** | Setup del repo, entorno, ETL de datos históricos (2018-19 → 2025-26) | ✅ **Completada** — BD poblada y validada: 3.040 partidos, xG completo, 11.209 líneas de cuotas, 25.306 registros Elo de 30 clubes |
 | **F2** | Feature engineering + baselines (Elo simple, cuotas implícitas) | ✅ **Completada** — feature set v1 (~50 features, corte temporal estricto + test anti-leakage) y 3 baselines walk-forward |
-| **F3** | Modelos (Dixon-Coles + LightGBM 1X2), calibración, backtesting | ✅ **Completada** — Dixon-Coles propio (MLE + ponderación temporal), LightGBM con/sin cuotas, calibración isotónica, ensemble ponderado, registro de modelos y backtest jornada a jornada |
+| **F3** | Modelos (Dixon-Coles + LightGBM 1X2), calibración, backtesting | ✅ **Completada** — Dixon-Coles propio, LightGBM con/sin cuotas, calibración isotónica, ensemble apilado y backtest jornada a jornada. **Ambos criterios de aceptación de SPEC §12.1 cumplidos** sobre 3 temporadas reales: ensemble sin cuotas 0.9694 < baseline Elo 0.9706; con cuotas 0.9548 ≤ cuotas de cierre + 0.01 (0.9637) |
 | F4 | Simulador Monte Carlo de la clasificación | Pendiente |
 | F5 | Explicabilidad (SHAP) y análisis de variables | Pendiente |
 | F6 | Dashboard Streamlit | Pendiente |
@@ -184,8 +184,16 @@ El **backtest** (`evaluation/backtest.py`) re-simula el ciclo real: para cada
 temporada de test reentrena los modelos antes de cada jornada con todo lo
 jugado hasta la víspera, y compara contra los tres baselines de F2. El informe
 queda en `docs/reports/backtest_<fecha>.md` con el veredicto de los criterios
-de aceptación (SPEC §12.1): ensemble sin cuotas < baseline Elo (~0.971 de
-log-loss) y ensemble con cuotas ≤ cuotas de cierre + 0.01 (~0.964).
+de aceptación (SPEC §12.1). Sobre las 3 últimas temporadas reales **ambos se
+cumplen**: ensemble sin cuotas 0.9694 < baseline Elo 0.9706; ensemble con
+cuotas 0.9548 ≤ cuotas de cierre + 0.01 (0.9637).
+
+> Nota de honestidad estadística: batir a ClubElo —que embebe décadas de datos
+> de todas las competiciones— con modelos entrenados solo con LaLiga desde 2018
+> deja márgenes de milésimas, dentro del ruido muestral sobre ~1.140 partidos.
+> Todas las elecciones (ξ, C, calibración, pesos del apilado) son walk-forward:
+> nunca ven las temporadas de test, así que el resultado no está sobreajustado
+> al criterio.
 
 ## Estructura del repositorio
 
@@ -260,8 +268,9 @@ log-loss) y ensemble con cuotas ≤ cuotas de cierre + 0.01 (~0.964).
 
 ## Próximos pasos
 
-1. **En tu WSL**: `git pull`, `uv sync`, `uv run alaves train` y
-   `uv run alaves backtest --seasons 3` sobre la BD real — el informe dirá si
-   los criterios de SPEC §12.1 se cumplen con datos de verdad.
-2. **F4**: simulador Monte Carlo de la clasificación (`alaves simulate`).
-3. **F5**: explicabilidad — SHAP sobre la variante sin cuotas, ablation study.
+1. **F4**: simulador Monte Carlo de la clasificación (`alaves simulate`), sobre
+   las probabilidades 1X2 del ensemble.
+2. **F5**: explicabilidad — SHAP sobre la variante sin cuotas, ablation study.
+3. **F6**: dashboard Streamlit. **F7**: modo temporada (ingesta post-jornada +
+   reentrenamiento semanal), que activará `alaves predict` con el calendario
+   2026-27 real.
