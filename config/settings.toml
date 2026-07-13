@@ -10,6 +10,15 @@ current_season = "2026-27"
 # Parametrizado para que los tests puedan usar mini-ligas sintéticas.
 teams_per_season = 20
 
+[league.zones]
+# Rangos de posición [desde, hasta] de cada zona (1 = líder). Reparto europeo
+# aproximado de LaLiga; ajustable sin tocar código (CLAUDE.md §8).
+titulo = [1, 1]
+champions = [1, 4]     # fase de liga de la Champions
+europa = [5, 6]        # Europa League
+conference = [7, 7]    # Conference (aprox.; varía con las copas)
+descenso = [18, 20]
+
 [seasons]
 # Temporadas históricas de entrenamiento (SPEC §5): desde 2018-19 porque no hay
 # xG fiable antes; revisable por ADR.

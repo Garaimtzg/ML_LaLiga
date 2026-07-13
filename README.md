@@ -17,7 +17,7 @@ la clasificación final mediante simulación Monte Carlo.
 | **F1** | Setup del repo, entorno, ETL de datos históricos (2018-19 → 2025-26) | ✅ **Completada** — BD poblada y validada: 3.040 partidos, xG completo, 11.209 líneas de cuotas, 25.306 registros Elo de 30 clubes |
 | **F2** | Feature engineering + baselines (Elo simple, cuotas implícitas) | ✅ **Completada** — feature set v1 (~50 features, corte temporal estricto + test anti-leakage) y 3 baselines walk-forward |
 | **F3** | Modelos (Dixon-Coles + LightGBM 1X2), calibración, backtesting | ✅ **Completada** — Dixon-Coles propio, LightGBM con/sin cuotas, calibración isotónica, ensemble apilado y backtest jornada a jornada. **Ambos criterios de aceptación de SPEC §12.1 cumplidos** sobre 3 temporadas reales: ensemble sin cuotas 0.9694 < baseline Elo 0.9706; con cuotas 0.9548 ≤ cuotas de cierre + 0.01 (0.9637) |
-| F4 | Simulador Monte Carlo de la clasificación | Pendiente |
+| **F4** | Simulador Monte Carlo de la clasificación | ✅ **Completada** — simulación vectorizada (N=10.000) sobre las P(1X2) del ensemble, con DG del Dixon-Coles para el desempate; salidas por equipo (posición esperada, P(título/Champions/Europa/descenso), puntos) y modo demo sobre temporadas históricas |
 | F5 | Explicabilidad (SHAP) y análisis de variables | Pendiente |
 | F6 | Dashboard Streamlit | Pendiente |
 | F7 | Modo temporada: ingesta post-jornada + reentrenamiento semanal | Pendiente |
@@ -88,8 +88,8 @@ uv run alaves backtest --seasons 3   # backtest jornada a jornada (~unos minutos
 | `uv run alaves train [--no-odds]` | Entrena DC + LightGBM + calibración + ensemble y registra la versión | ✅ F3 |
 | `uv run alaves backtest --seasons 3` | Backtest jornada a jornada vs baselines + informe en `docs/reports/` | ✅ F3 |
 | `uv run alaves predict --next` / `--matchday N` | Predice partidos programados y persiste las predicciones | ✅ F3* |
+| `uv run alaves simulate [--season S --from-matchday N]` | Monte Carlo de la clasificación proyectada | ✅ F4 |
 | `uv run alaves ingest --matchday N` | Ingesta post-jornada | F7 |
-| `uv run alaves simulate --n 10000` | Monte Carlo de la clasificación | F4 |
 | `uv run alaves report --importance` | Informes SHAP / importancia de variables | F5 |
 
 \* `predict` está completo, pero necesita partidos con estado `scheduled` en la
@@ -195,6 +195,24 @@ cuotas 0.9548 ≤ cuotas de cierre + 0.01 (0.9637).
 > nunca ven las temporadas de test, así que el resultado no está sobreajustado
 > al criterio.
 
+## Clasificación proyectada (F4)
+
+`alaves simulate` (`simulation/monte_carlo.py`, ADR-023) proyecta la tabla
+final por Monte Carlo: simula la temporada N=10.000 veces muestreando cada
+partido pendiente de su distribución 1X2 del ensemble (no el resultado más
+probable, que sesgaría), reparte puntos y desempata por diferencia de goles
+muestreada del Dixon-Coles. De las 10.000 tablas salen, por equipo, la posición
+esperada y las probabilidades de cada zona (título, Champions, Europa,
+descenso), configurables en `[league.zones]`.
+
+Como el calendario 2026-27 llega en la F7, el modo demo permite validar hoy con
+datos reales — proyecta una temporada pasada desde una jornada dada y se puede
+contrastar con lo que ocurrió:
+
+```bash
+uv run alaves simulate --season 2025-26 --from-matchday 20
+```
+
 ## Estructura del repositorio
 
 ```
@@ -212,6 +230,7 @@ cuotas 0.9548 ≤ cuotas de cierre + 0.01 (0.9637).
 │   ├── features/                     # elo.py (Elo interno), form.py, build.py
 │   ├── models/                       # dixon_coles.py, gbm_classifier.py,
 │   │                                 # calibration.py, ensemble.py, linear.py, train.py
+│   ├── simulation/                   # monte_carlo.py (clasificación proyectada)
 │   ├── evaluation/                   # metrics.py, baselines.py, backtest.py
 │   ├── config.py                     # carga tipada de la configuración
 │   ├── cli.py                        # CLI typer (`alaves ...`)
@@ -255,6 +274,7 @@ cuotas 0.9548 ≤ cuotas de cierre + 0.01 (0.9637).
 | [020](docs/decisions/020-componente-lineal-y-calibracion-dc.md) | Componente lineal Elo+forma, calibración del Dixon-Coles y guarda de calibración con pocos datos |
 | [021](docs/decisions/021-regularizacion-del-lineal-por-validacion.md) | Regularización (C) del componente lineal elegida por validación + componente lineal visible en el backtest |
 | [022](docs/decisions/022-calibracion-loso-para-pesos-del-apilado.md) | Selección de pesos del apilado con calibración leave-one-season-out (comparación justa entre componentes) |
+| [023](docs/decisions/023-simulador-monte-carlo.md) | Simulador Monte Carlo de la clasificación: muestreo del 1X2 + DG del Dixon-Coles, zonas parametrizadas, modo demo |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 
@@ -268,9 +288,9 @@ cuotas 0.9548 ≤ cuotas de cierre + 0.01 (0.9637).
 
 ## Próximos pasos
 
-1. **F4**: simulador Monte Carlo de la clasificación (`alaves simulate`), sobre
-   las probabilidades 1X2 del ensemble.
-2. **F5**: explicabilidad — SHAP sobre la variante sin cuotas, ablation study.
-3. **F6**: dashboard Streamlit. **F7**: modo temporada (ingesta post-jornada +
-   reentrenamiento semanal), que activará `alaves predict` con el calendario
-   2026-27 real.
+1. **F5**: explicabilidad — SHAP sobre la variante sin cuotas, ablation study,
+   informe de importancia de variables (`alaves report --importance`).
+2. **F6**: dashboard Streamlit (predicciones, clasificación proyectada,
+   explicabilidad, rendimiento del modelo, registro de decisiones).
+3. **F7**: modo temporada (ingesta post-jornada + reentrenamiento semanal), que
+   activará `alaves predict`/`simulate` con el calendario 2026-27 real.

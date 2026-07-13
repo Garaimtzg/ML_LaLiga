@@ -15,6 +15,17 @@ from pydantic import BaseModel, Field
 
 class LeagueConfig(BaseModel):
     teams_per_season: int = 20
+    # Zonas de la clasificación por rango de posición [desde, hasta] (1 = líder).
+    # Parametrizadas (CLAUDE.md §8); por defecto, el reparto europeo de LaLiga.
+    zones: dict[str, list[int]] = Field(
+        default_factory=lambda: {
+            "titulo": [1, 1],
+            "champions": [1, 4],
+            "europa": [5, 6],
+            "conference": [7, 7],
+            "descenso": [18, 20],
+        }
+    )
 
     @property
     def rounds(self) -> int:
