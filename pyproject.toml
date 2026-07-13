@@ -9,11 +9,15 @@ requires-python = ">=3.11"
 # beautifulsoup4 (parseo FBref, ADR-008) y curl-cffi (huella TLS, ADR-009).
 # F3 (modelos): lightgbm y scipy (ADR-016; scipy ya llegaba transitivo con
 # scikit-learn, se declara porque el Dixon-Coles lo llama directamente).
+# F5 (explicabilidad): matplotlib para los gráficos del informe. Los valores
+# SHAP se calculan con el TreeSHAP nativo de LightGBM, sin la librería `shap`
+# (su cadena numba choca con numpy 2.x y Python 3.11+; ADR-024).
 dependencies = [
     "beautifulsoup4>=4.15.0",
     "curl-cffi>=0.15.0",
     "httpx>=0.27",
     "lightgbm>=4.6.0",
+    "matplotlib>=3.11.0",
     "numpy>=2.4.6",
     "pandas>=3.0.3",
     "pyarrow>=25.0.0",

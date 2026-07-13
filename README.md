@@ -18,7 +18,7 @@ la clasificación final mediante simulación Monte Carlo.
 | **F2** | Feature engineering + baselines (Elo simple, cuotas implícitas) | ✅ **Completada** — feature set v1 (~50 features, corte temporal estricto + test anti-leakage) y 3 baselines walk-forward |
 | **F3** | Modelos (Dixon-Coles + LightGBM 1X2), calibración, backtesting | ✅ **Completada** — Dixon-Coles propio, LightGBM con/sin cuotas, calibración isotónica, ensemble apilado y backtest jornada a jornada. **Ambos criterios de aceptación de SPEC §12.1 cumplidos** sobre 3 temporadas reales: ensemble sin cuotas 0.9694 < baseline Elo 0.9706; con cuotas 0.9548 ≤ cuotas de cierre + 0.01 (0.9637) |
 | **F4** | Simulador Monte Carlo de la clasificación | ✅ **Completada** — simulación vectorizada (N=10.000) sobre las P(1X2) del ensemble, con DG del Dixon-Coles para el desempate; salidas por equipo (posición esperada, P(título/Champions/Europa/descenso), puntos) y modo demo sobre temporadas históricas |
-| F5 | Explicabilidad (SHAP) y análisis de variables | Pendiente |
+| **F5** | Explicabilidad (SHAP) y análisis de variables | ✅ **Completada** — SHAP global (TreeSHAP nativo de LightGBM, sin la librería `shap`), beeswarm, dependencia parcial y ablation study por bloques sobre la variante sin cuotas; informe en `docs/reports/feature_importance.md` |
 | F6 | Dashboard Streamlit | Pendiente |
 | F7 | Modo temporada: ingesta post-jornada + reentrenamiento semanal | Pendiente |
 
@@ -89,8 +89,8 @@ uv run alaves backtest --seasons 3   # backtest jornada a jornada (~unos minutos
 | `uv run alaves backtest --seasons 3` | Backtest jornada a jornada vs baselines + informe en `docs/reports/` | ✅ F3 |
 | `uv run alaves predict --next` / `--matchday N` | Predice partidos programados y persiste las predicciones | ✅ F3* |
 | `uv run alaves simulate [--season S --from-matchday N]` | Monte Carlo de la clasificación proyectada | ✅ F4 |
+| `uv run alaves report --importance` | Informe SHAP / importancia de variables + ablation | ✅ F5 |
 | `uv run alaves ingest --matchday N` | Ingesta post-jornada | F7 |
-| `uv run alaves report --importance` | Informes SHAP / importancia de variables | F5 |
 
 \* `predict` está completo, pero necesita partidos con estado `scheduled` en la
 BD; el calendario de la 2026-27 se ingiere en la F7 (API-Football). Hasta
@@ -213,6 +213,17 @@ contrastar con lo que ocurrió:
 uv run alaves simulate --season 2025-26 --from-matchday 20
 ```
 
+## Importancia de variables (F5)
+
+`alaves report --importance` (`explain/`, ADR-024) genera un informe sobre la
+variante **sin cuotas** (la interpretable): ranking SHAP global de variables,
+beeswarm de la clase "victoria local", dependencia parcial de las 8 top y un
+**ablation study** que cuantifica cuánto aporta cada bloque de features (Elo,
+xG, forma, descanso, contexto) midiendo cuánto empeora el log-loss al quitarlo.
+Los valores SHAP se calculan con el TreeSHAP **nativo de LightGBM**
+(`pred_contrib=True`), sin la librería `shap` (su cadena `numba` choca con
+numpy 2.x). Salida en `docs/reports/feature_importance.md` + figuras PNG.
+
 ## Estructura del repositorio
 
 ```
@@ -231,6 +242,7 @@ uv run alaves simulate --season 2025-26 --from-matchday 20
 │   ├── models/                       # dixon_coles.py, gbm_classifier.py,
 │   │                                 # calibration.py, ensemble.py, linear.py, train.py
 │   ├── simulation/                   # monte_carlo.py (clasificación proyectada)
+│   ├── explain/                      # importance.py (SHAP), ablation.py, report.py
 │   ├── evaluation/                   # metrics.py, baselines.py, backtest.py
 │   ├── config.py                     # carga tipada de la configuración
 │   ├── cli.py                        # CLI typer (`alaves ...`)
@@ -275,6 +287,7 @@ uv run alaves simulate --season 2025-26 --from-matchday 20
 | [021](docs/decisions/021-regularizacion-del-lineal-por-validacion.md) | Regularización (C) del componente lineal elegida por validación + componente lineal visible en el backtest |
 | [022](docs/decisions/022-calibracion-loso-para-pesos-del-apilado.md) | Selección de pesos del apilado con calibración leave-one-season-out (comparación justa entre componentes) |
 | [023](docs/decisions/023-simulador-monte-carlo.md) | Simulador Monte Carlo de la clasificación: muestreo del 1X2 + DG del Dixon-Coles, zonas parametrizadas, modo demo |
+| [024](docs/decisions/024-explicabilidad-shap-nativo-y-ablation.md) | Explicabilidad con TreeSHAP nativo de LightGBM (evita la librería `shap`/`numba`) + ablation study por bloques |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 
@@ -288,9 +301,8 @@ uv run alaves simulate --season 2025-26 --from-matchday 20
 
 ## Próximos pasos
 
-1. **F5**: explicabilidad — SHAP sobre la variante sin cuotas, ablation study,
-   informe de importancia de variables (`alaves report --importance`).
-2. **F6**: dashboard Streamlit (predicciones, clasificación proyectada,
-   explicabilidad, rendimiento del modelo, registro de decisiones).
-3. **F7**: modo temporada (ingesta post-jornada + reentrenamiento semanal), que
+1. **F6**: dashboard Streamlit (predicciones, clasificación proyectada,
+   explicabilidad con waterfall por partido, rendimiento del modelo, registro
+   de decisiones).
+2. **F7**: modo temporada (ingesta post-jornada + reentrenamiento semanal), que
    activará `alaves predict`/`simulate` con el calendario 2026-27 real.
