@@ -1,9 +1,9 @@
 """CLI del proyecto (`alaves ...`), según SPEC §10.
 
 Implementados: ingest --historical (F1), status, validate, features,
-baselines (F2), train, predict, backtest (F3). Los comandos restantes
-(simulate, report) son stubs que indican su fase, para que la superficie
-del CLI coincida con la especificación sin prometer nada que no funcione.
+baselines (F2), train, predict, backtest (F3), simulate (F4). El resto
+(report) es un stub que indica su fase, para que la superficie del CLI
+coincida con la especificación sin prometer nada que no funcione.
 """
 
 from __future__ import annotations
@@ -372,9 +372,104 @@ def predict(
 
 
 @app.command()
-def simulate() -> None:
-    """Simulación Monte Carlo de la clasificación (F4)."""
-    _stub("Fase 4")
+def simulate(
+    n: int = typer.Option(10000, "--n", help="Número de simulaciones Monte Carlo."),
+    seed: int = typer.Option(42, "--seed", help="Semilla (reproducibilidad)."),
+    season: str | None = typer.Option(
+        None, "--season", help="Modo demo: proyecta una temporada histórica (p. ej. 2025-26)."
+    ),
+    from_matchday: int = typer.Option(
+        1, "--from-matchday", help="En modo demo, jornada desde la que se proyecta."
+    ),
+    no_odds: bool = typer.Option(False, "--no-odds", help="Fuerza la variante sin cuotas."),
+) -> None:
+    """Proyecta la clasificación por Monte Carlo sobre las probabilidades del ensemble (F4).
+
+    Sin `--season` simula la temporada actual (partidos jugados = clasificación,
+    programados = por simular). Con `--season S --from-matchday N` proyecta una
+    temporada histórica desde la jornada N tomando las anteriores como reales
+    (modo demo/validación: permite contrastar la tabla proyectada con la real).
+    """
+    settings = _load_settings()
+    _require_db(settings)
+    from alaves_predictor.features.build import build_features
+    from alaves_predictor.models.gbm_classifier import VARIANT_NO_ODDS, VARIANT_WITH_ODDS
+    from alaves_predictor.models.train import load_latest_model
+    from alaves_predictor.simulation import monte_carlo as mc
+
+    target_season = season or settings.current_season
+    conn = db.connect(settings.data.db_path)
+    try:
+        bundle = load_latest_model(conn)
+        if bundle is None:
+            typer.secho("No hay modelo entrenado. Ejecuta `alaves train` primero.", err=True)
+            raise typer.Exit(code=1)
+        df = build_features(conn, settings, include_scheduled=True)
+        df = df[df["season"] == target_season]
+        if df.empty:
+            typer.secho(f"No hay partidos de {target_season} en la BD.", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
+
+        if season is not None:  # modo demo sobre temporada histórica
+            played = df[df["matchday"] < from_matchday]
+            remaining_rows = df[df["matchday"] >= from_matchday]
+        else:  # temporada en curso: jugados vs programados
+            played = df[df["result"].notna()]
+            remaining_rows = df[df["result"].isna()]
+
+        if remaining_rows.empty:
+            typer.secho(
+                f"No hay partidos por simular en {target_season}. "
+                "El calendario de la temporada en curso se ingiere en la F7.",
+                fg=typer.colors.YELLOW,
+            )
+            raise typer.Exit(code=1)
+
+        has_odds = remaining_rows["imp_home"].notna().all()
+        variant = VARIANT_NO_ODDS
+        if not no_odds and VARIANT_WITH_ODDS in bundle.variants and has_odds:
+            variant = VARIANT_WITH_ODDS
+        preds = bundle.predict_matches(remaining_rows, variant)
+        remaining = mc.build_remaining(preds, bundle.dixon_coles)
+    finally:
+        conn.close()
+
+    teams = sorted(set(df["home_id"]) | set(df["away_id"]))
+    standings = mc.current_standings(played)
+    typer.echo(
+        f"Simulando {target_season} desde {len(played)} partidos jugados y "
+        f"{len(remaining)} por jugar ({n} simulaciones, variante {variant})..."
+    )
+    result = mc.simulate(standings, remaining, teams, n=n, seed=seed, zones=settings.league.zones)
+
+    ranked = sorted(teams, key=result.expected_position)
+    header = f"{'#':>2} {'Equipo':22} {'Pts':>5} {'Pos':>4}  {'Título':>6} {'Champ':>6} {'Eur':>5} {'Desc':>6}"  # noqa: E501
+    typer.secho(f"Clasificación proyectada — {target_season}", bold=True)
+    typer.secho(header, bold=True)
+    for i, team in enumerate(ranked, start=1):
+        name = settings.teams[team].name if team in settings.teams else team
+        mark = "◀" if team == settings.focus_team else " "
+        typer.echo(
+            f"{i:>2} {name[:22]:22} {result.points_for(team):5.1f} "
+            f"{result.expected_position(team):4.1f}  "
+            f"{result.prob_zone(team, 'titulo') * 100:5.1f}% "
+            f"{result.prob_zone(team, 'champions') * 100:5.1f}% "
+            f"{result.prob_zone(team, 'europa') * 100:4.0f}% "
+            f"{result.prob_zone(team, 'descenso') * 100:5.1f}% {mark}"
+        )
+
+    focus = settings.focus_team
+    if focus in teams:
+        name = settings.teams[focus].name if focus in settings.teams else focus
+        typer.secho(f"\nFoco — {name}:", bold=True)
+        typer.echo(
+            f"  Posición esperada: {result.expected_position(focus):.1f}  "
+            f"| Puntos esperados: {result.points_for(focus):.1f}"
+        )
+        typer.echo(
+            f"  P(descenso): {result.prob_zone(focus, 'descenso') * 100:.1f}%  "
+            f"| P(Europa o mejor, top-6): {result.prob_between(focus, 1, 6) * 100:.1f}%"
+        )
 
 
 @app.command()
