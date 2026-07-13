@@ -51,6 +51,60 @@ class FeaturesConfig(BaseModel):
     elo_internal: EloInternalConfig = Field(default_factory=EloInternalConfig)
 
 
+class DixonColesConfig(BaseModel):
+    """Parámetros del modelo Dixon-Coles (SPEC §6.2, ADR-015/019)."""
+
+    xi: float = 0.0019  # ponderación temporal: peso = exp(-xi · días)
+    max_goals: int = 10  # truncamiento de la matriz de marcadores
+    rho_bound: float = 0.2  # cota de |rho| para que tau se mantenga > 0
+    # candidatos de xi evaluados en validación walk-forward (ADR-019);
+    # vacío o con un único valor => se usa `xi` sin selección
+    xi_grid: list[float] = Field(default_factory=list)
+
+    def xi_candidates(self) -> list[float]:
+        return list(self.xi_grid) if self.xi_grid else [self.xi]
+
+
+class LightGBMConfig(BaseModel):
+    """Hiperparámetros v1 del clasificador (SPEC §6.3, ADR-016)."""
+
+    n_estimators: int = 300
+    learning_rate: float = 0.03
+    num_leaves: int = 15
+    min_child_samples: int = 50
+    feature_fraction: float = 0.7
+    bagging_fraction: float = 0.8
+    bagging_freq: int = 1
+    lambda_l2: float = 1.0
+
+
+class LinearConfig(BaseModel):
+    """Componente lineal Elo+forma del ensemble sin cuotas (ADR-020/021)."""
+
+    c: float = 1.0  # inverso de la regularización L2 por defecto
+    # candidatos de C evaluados en validación walk-forward (ADR-021); con las
+    # features estandarizadas, C bajo encoge la señal Elo — hay que buscarlo
+    c_grid: list[float] = Field(default_factory=lambda: [0.3, 1.0, 3.0, 10.0, 30.0])
+
+    def c_candidates(self) -> list[float]:
+        return list(self.c_grid) if self.c_grid else [self.c]
+
+
+class EnsembleConfig(BaseModel):
+    weight_grid_step: float = 0.05
+
+
+class ModelsConfig(BaseModel):
+    """Parámetros de la fase de modelado (F3)."""
+
+    registry_dir: Path = Path("models/registry")
+    max_logloss_regression: float = 0.10  # regla anti-sorpresa (SPEC §6.4)
+    dixon_coles: DixonColesConfig = Field(default_factory=DixonColesConfig)
+    lightgbm: LightGBMConfig = Field(default_factory=LightGBMConfig)
+    linear: LinearConfig = Field(default_factory=LinearConfig)
+    ensemble: EnsembleConfig = Field(default_factory=EnsembleConfig)
+
+
 class FootballDataConfig(BaseModel):
     base_url: str
     division: str = "SP1"
@@ -115,6 +169,7 @@ class Settings(BaseModel):
     data: DataConfig
     sources: SourcesConfig
     features: FeaturesConfig = Field(default_factory=FeaturesConfig)
+    models: ModelsConfig = Field(default_factory=ModelsConfig)
     teams: dict[str, TeamConfig]
 
 
@@ -139,5 +194,6 @@ def load_settings(config_dir: Path = Path("config")) -> Settings:
         data=DataConfig(**raw["data"]),
         sources=SourcesConfig(**raw["sources"]),
         features=FeaturesConfig(**raw.get("features", {})),
+        models=ModelsConfig(**raw.get("models", {})),
         teams={team_id: TeamConfig(**cfg) for team_id, cfg in teams_raw.items()},
     )

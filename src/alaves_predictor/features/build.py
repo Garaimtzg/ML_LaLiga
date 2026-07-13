@@ -24,11 +24,17 @@ CONTEXT_COLS = ["matchday", "month", "no_crowd", "derby", "promoted_home", "prom
 MARKET_COLS = ["imp_home", "imp_draw", "imp_away"]
 
 
-def load_matches_frame(conn: sqlite3.Connection) -> pd.DataFrame:
-    """Partidos con el xG de cada lado, ordenados cronológicamente."""
+def load_matches_frame(conn: sqlite3.Connection, include_scheduled: bool = False) -> pd.DataFrame:
+    """Partidos con el xG de cada lado, ordenados cronológicamente.
+
+    Con include_scheduled=True entran también los partidos por jugar (goles
+    NaN): sus features se construyen con lo anterior a su fecha, que es
+    exactamente lo que necesita `alaves predict`.
+    """
+    statuses = "('finished', 'scheduled')" if include_scheduled else "('finished')"
     matches = pd.read_sql_query(
         "SELECT match_id, season, matchday, date, home_id, away_id, home_goals, away_goals "
-        "FROM matches WHERE status = 'finished' ORDER BY date, match_id",
+        f"FROM matches WHERE status IN {statuses} ORDER BY date, match_id",
         conn,
     )
     stats = pd.read_sql_query("SELECT match_id, team_id, is_home, xg FROM match_stats", conn)
@@ -105,6 +111,8 @@ def _h2h_points(matches: pd.DataFrame, window: int = 5) -> pd.Series:
             values.append(points / len(relevant))
         else:
             values.append(None)
+        if pd.isna(m.home_goals) or pd.isna(m.away_goals):
+            continue  # partido sin jugar: no entra en el historial de cruces
         if m.home_goals > m.away_goals:
             previous.append((m.home_id, 0))
         elif m.home_goals < m.away_goals:
@@ -142,10 +150,16 @@ def _promoted_flags(matches: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def build_features(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame:
-    """Construye el feature set v1 completo (una fila por partido jugado)."""
+def build_features(
+    conn: sqlite3.Connection, settings: Settings, include_scheduled: bool = False
+) -> pd.DataFrame:
+    """Construye el feature set v1 completo (una fila por partido).
+
+    Por defecto solo partidos jugados; include_scheduled=True añade los
+    programados (target `result` nulo) para poder predecirlos.
+    """
     cfg = settings.features
-    matches = load_matches_frame(conn)
+    matches = load_matches_frame(conn, include_scheduled=include_scheduled)
 
     # --- Elo interno (secuencial => sin fugas) + persistencia ---
     elo_hist = compute_internal_elo(matches, cfg.elo_internal)
@@ -192,7 +206,7 @@ def build_features(conn: sqlite3.Connection, settings: Settings) -> pd.DataFrame
 
     # --- Target y corte temporal ---
     features["result"] = [
-        "H" if hg > ag else ("D" if hg == ag else "A")
+        None if pd.isna(hg) or pd.isna(ag) else ("H" if hg > ag else ("D" if hg == ag else "A"))
         for hg, ag in zip(features["home_goals"], features["away_goals"], strict=True)
     ]
     features["as_of_date"] = (dates - timedelta(days=1)).dt.date.astype(str)

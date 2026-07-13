@@ -7,15 +7,19 @@ requires-python = ">=3.11"
 # Política de dependencias (ADR-001): solo se añade una librería cuando la fase
 # que la usa se implementa. F1 (ETL): httpx, pydantic, typer,
 # beautifulsoup4 (parseo FBref, ADR-008) y curl-cffi (huella TLS, ADR-009).
+# F3 (modelos): lightgbm y scipy (ADR-016; scipy ya llegaba transitivo con
+# scikit-learn, se declara porque el Dixon-Coles lo llama directamente).
 dependencies = [
     "beautifulsoup4>=4.15.0",
     "curl-cffi>=0.15.0",
     "httpx>=0.27",
+    "lightgbm>=4.6.0",
     "numpy>=2.4.6",
     "pandas>=3.0.3",
     "pyarrow>=25.0.0",
     "pydantic>=2.5",
     "scikit-learn>=1.9.0",
+    "scipy>=1.17.1",
     "typer>=0.12",
 ]
 

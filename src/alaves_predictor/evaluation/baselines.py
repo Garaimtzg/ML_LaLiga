@@ -41,20 +41,31 @@ def historical_frequencies(train: pd.DataFrame) -> np.ndarray:
     return np.array([counts.get(o, 0) / total for o in OUTCOME_ORDER])
 
 
-def elo_logistic_probs(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
-    """P(1X2) de una logística multinomial sobre elo_clubelo_diff.
+def fit_elo_logistic(train: pd.DataFrame) -> LogisticRegression:
+    """Ajusta la logística multinomial sobre elo_clubelo_diff.
 
     La ventaja de campo no necesita feature: al ser constante, la capturan
-    los interceptos por clase del modelo.
+    los interceptos por clase del modelo. Además de baseline, desde F3 es un
+    componente del ensemble sin cuotas (ADR-019), por eso fit y predict van
+    separados.
     """
     fit_rows = train.dropna(subset=["elo_clubelo_diff"])
     model = LogisticRegression(max_iter=1000)
     model.fit(fit_rows[["elo_clubelo_diff"]], fit_rows["result"])
+    return model
+
+
+def predict_elo_logistic(model: LogisticRegression, test: pd.DataFrame) -> np.ndarray:
+    """P(1X2) del modelo Elo logístico, en el orden canónico H/D/A."""
     x_test = test[["elo_clubelo_diff"]].fillna(0.0)
     raw = model.predict_proba(x_test)
-    # reordenar las clases del modelo al orden canónico H/D/A
     class_index = {c: i for i, c in enumerate(model.classes_)}
     return raw[:, [class_index[o] for o in OUTCOME_ORDER]]
+
+
+def elo_logistic_probs(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
+    """Ajusta y predice de una vez (uso como baseline walk-forward)."""
+    return predict_elo_logistic(fit_elo_logistic(train), test)
 
 
 def closing_odds_probs(conn: sqlite3.Connection, match_ids: pd.Series) -> pd.DataFrame:

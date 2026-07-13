@@ -16,7 +16,7 @@ la clasificación final mediante simulación Monte Carlo.
 |------|-----------|--------|
 | **F1** | Setup del repo, entorno, ETL de datos históricos (2018-19 → 2025-26) | ✅ **Completada** — BD poblada y validada: 3.040 partidos, xG completo, 11.209 líneas de cuotas, 25.306 registros Elo de 30 clubes |
 | **F2** | Feature engineering + baselines (Elo simple, cuotas implícitas) | ✅ **Completada** — feature set v1 (~50 features, corte temporal estricto + test anti-leakage) y 3 baselines walk-forward |
-| F3 | Modelos (Dixon-Coles + LightGBM 1X2), calibración, backtesting | Pendiente |
+| **F3** | Modelos (Dixon-Coles + LightGBM 1X2), calibración, backtesting | ✅ **Completada** — Dixon-Coles propio, LightGBM con/sin cuotas, calibración isotónica, ensemble apilado y backtest jornada a jornada. **Ambos criterios de aceptación de SPEC §12.1 cumplidos** sobre 3 temporadas reales: ensemble sin cuotas 0.9694 < baseline Elo 0.9706; con cuotas 0.9548 ≤ cuotas de cierre + 0.01 (0.9637) |
 | F4 | Simulador Monte Carlo de la clasificación | Pendiente |
 | F5 | Explicabilidad (SHAP) y análisis de variables | Pendiente |
 | F6 | Dashboard Streamlit | Pendiente |
@@ -30,6 +30,14 @@ la clasificación final mediante simulación Monte Carlo.
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 # reinicia la shell o: source ~/.local/bin/env
+```
+
+- **libgomp** (runtime de OpenMP, lo usa LightGBM desde F3). En un Ubuntu de
+  WSL recién instalado no viene de serie; si `alaves train` falla con
+  `OSError: libgomp.so.1: cannot open shared object file`:
+
+```bash
+sudo apt-get update && sudo apt-get install -y libgomp1
 ```
 
 ## Puesta en marcha (en tu WSL)
@@ -47,12 +55,16 @@ cd ~ && mkdir -p proyectos && cd proyectos
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (71 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (103 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
 uv run alaves validate           # certifica la BD: conteos, coberturas, consistencia
 uv run alaves status             # resumen de filas por tabla y temporada
+
+# Modelado (F3): entrenar y evaluar contra los baselines
+uv run alaves train              # entrena y registra la versión del modelo
+uv run alaves backtest --seasons 3   # backtest jornada a jornada (~unos minutos)
 ```
 
 > **Por qué la ingesta se ejecuta en tu máquina**: el entorno remoto de
@@ -73,12 +85,16 @@ uv run alaves status             # resumen de filas por tabla y temporada
 | `uv run alaves status` | Filas por tabla y partidos por temporada | ✅ F1 |
 | `uv run alaves features` | Construye el feature set v1 (tabla `features` + Parquet) | ✅ F2 |
 | `uv run alaves baselines` | Evalúa los 3 baselines walk-forward e informa en `docs/reports/` | ✅ F2 |
+| `uv run alaves train [--no-odds]` | Entrena DC + LightGBM + calibración + ensemble y registra la versión | ✅ F3 |
+| `uv run alaves backtest --seasons 3` | Backtest jornada a jornada vs baselines + informe en `docs/reports/` | ✅ F3 |
+| `uv run alaves predict --next` / `--matchday N` | Predice partidos programados y persiste las predicciones | ✅ F3* |
 | `uv run alaves ingest --matchday N` | Ingesta post-jornada | F7 |
-| `uv run alaves train` | Entrenar Dixon-Coles + LightGBM + calibración | F3 |
-| `uv run alaves predict --next` | Predicciones de la próxima jornada | F3/F7 |
 | `uv run alaves simulate --n 10000` | Monte Carlo de la clasificación | F4 |
-| `uv run alaves backtest` | Backtesting walk-forward | F3 |
 | `uv run alaves report --importance` | Informes SHAP / importancia de variables | F5 |
+
+\* `predict` está completo, pero necesita partidos con estado `scheduled` en la
+BD; el calendario de la 2026-27 se ingiere en la F7 (API-Football). Hasta
+entonces avisa honestamente de que no hay nada que predecir.
 
 Los comandos de fases futuras existen como stubs que lo indican honestamente.
 
@@ -136,6 +152,49 @@ en [`src/alaves_predictor/etl/db.py`](src/alaves_predictor/etl/db.py)):
 Identificadores legibles: `team_id = "alaves"`,
 `match_id = "2018-19_alaves_barcelona"`.
 
+## Modelos (F3)
+
+Tres piezas que se combinan (SPEC §6, ADRs 015-018):
+
+1. **Dixon-Coles** (`models/dixon_coles.py`): Poisson bivariante con parámetros
+   de ataque/defensa por equipo, ventaja de campo y corrección ρ de marcadores
+   bajos. Implementación propia por máxima verosimilitud (`scipy.optimize`),
+   con ponderación temporal exponencial (un partido de hace un año pesa ~0.5).
+   Aporta goles esperados, matriz de marcadores y el "marcador más probable".
+2. **LightGBM multiclase** (`models/gbm_classifier.py`) sobre el feature set
+   v1, en dos variantes: **con cuotas** (techo de rendimiento) y **sin cuotas**
+   (la que se interpretará con SHAP en F5).
+3. **Calibración isotónica + ensemble apilado** (`models/calibration.py`,
+   `models/ensemble.py`, `models/linear.py`, ADR-019/020): las probabilidades
+   del LightGBM y del Dixon-Coles se calibran por clase sobre predicciones
+   walk-forward (nunca sobre el entrenamiento) y se apilan con un tercer
+   componente — el mercado de apertura (con cuotas) o una logística Elo+forma
+   (sin cuotas) — con pesos elegidos por log-loss en validación. El ξ de la
+   ponderación temporal del Dixon-Coles también se elige por validación en una
+   rejilla. La calibración se desactiva sola con pocos datos (evita
+   sobreajuste).
+
+Cada `alaves train` guarda el artefacto en `models/registry/<versión>/`
+(gitignored) y una fila auditable en la tabla `model_registry`. **Regla
+anti-sorpresa** (SPEC §6.4): si el log-loss de validación empeora >10 %
+respecto a la última versión promocionada, la nueva se registra pero no se
+promociona y `predict` la ignora.
+
+El **backtest** (`evaluation/backtest.py`) re-simula el ciclo real: para cada
+temporada de test reentrena los modelos antes de cada jornada con todo lo
+jugado hasta la víspera, y compara contra los tres baselines de F2. El informe
+queda en `docs/reports/backtest_<fecha>.md` con el veredicto de los criterios
+de aceptación (SPEC §12.1). Sobre las 3 últimas temporadas reales **ambos se
+cumplen**: ensemble sin cuotas 0.9694 < baseline Elo 0.9706; ensemble con
+cuotas 0.9548 ≤ cuotas de cierre + 0.01 (0.9637).
+
+> Nota de honestidad estadística: batir a ClubElo —que embebe décadas de datos
+> de todas las competiciones— con modelos entrenados solo con LaLiga desde 2018
+> deja márgenes de milésimas, dentro del ruido muestral sobre ~1.140 partidos.
+> Todas las elecciones (ξ, C, calibración, pesos del apilado) son walk-forward:
+> nunca ven las temporadas de test, así que el resultado no está sobreajustado
+> al criterio.
+
 ## Estructura del repositorio
 
 ```
@@ -145,12 +204,15 @@ Identificadores legibles: `team_id = "alaves"`,
 │   ├── settings.toml                 # temporadas, fuentes, rutas, liga
 │   └── teams.toml                    # alias de equipos por fuente
 ├── data/                             # BD y descargas crudas (gitignored)
+├── models/registry/                  # artefactos entrenados (gitignored)
 ├── docs/
 │   ├── decisions/                    # ADRs (una decisión por archivo)
-│   └── reports/                      # informes de backtesting/importancia (F3+)
+│   └── reports/                      # informes de baselines/backtesting
 ├── src/alaves_predictor/
 │   ├── features/                     # elo.py (Elo interno), form.py, build.py
-│   ├── evaluation/                   # metrics.py, baselines.py
+│   ├── models/                       # dixon_coles.py, gbm_classifier.py,
+│   │                                 # calibration.py, ensemble.py, linear.py, train.py
+│   ├── evaluation/                   # metrics.py, baselines.py, backtest.py
 │   ├── config.py                     # carga tipada de la configuración
 │   ├── cli.py                        # CLI typer (`alaves ...`)
 │   └── etl/
@@ -164,7 +226,7 @@ Identificadores legibles: `team_id = "alaves"`,
 │           ├── fbref.py
 │           ├── understat.py          # xG de relleno vía API interna (ADR-011)
 │           └── clubelo.py
-└── tests/                            # 71 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 103 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)
@@ -185,6 +247,14 @@ Identificadores legibles: `team_id = "alaves"`,
 | [012](docs/decisions/012-feature-set-v1-y-dependencias-f2.md) | Feature set v1 (~50 features, as_of estricto); bloque técnico-táctico aplazado; deps de F2 |
 | [013](docs/decisions/013-elo-interno.md) | Elo interno clásico: K=20, ventaja 60, inicio 1500 (parámetros en config) |
 | [014](docs/decisions/014-baselines-y-evaluacion-walk-forward.md) | Baselines (frecuencias, Elo logístico, cuotas de cierre) y protocolo walk-forward |
+| [015](docs/decisions/015-dixon-coles.md) | Dixon-Coles propio: parametrización, ξ=0.0019/día, ρ acotado, proxy de colista para ascendidos |
+| [016](docs/decisions/016-lightgbm-variantes.md) | LightGBM: hiperparámetros v1 documentados, variantes con/sin cuotas, NaN nativos |
+| [017](docs/decisions/017-calibracion-y-ensemble.md) | Calibración isotónica sobre folds temporales (suelo 1 %) + ensemble ponderado por log-loss |
+| [018](docs/decisions/018-backtest-y-registro.md) | Backtest jornada a jornada, registro de modelos y regla anti-sorpresa del 10 % |
+| [019](docs/decisions/019-ensemble-apilado-y-xi-por-validacion.md) | Ensemble apilado de 3 componentes (DC + GBM + mercado/Elo) y ξ elegido por validación |
+| [020](docs/decisions/020-componente-lineal-y-calibracion-dc.md) | Componente lineal Elo+forma, calibración del Dixon-Coles y guarda de calibración con pocos datos |
+| [021](docs/decisions/021-regularizacion-del-lineal-por-validacion.md) | Regularización (C) del componente lineal elegida por validación + componente lineal visible en el backtest |
+| [022](docs/decisions/022-calibracion-loso-para-pesos-del-apilado.md) | Selección de pesos del apilado con calibración leave-one-season-out (comparación justa entre componentes) |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 
@@ -196,10 +266,11 @@ Identificadores legibles: `team_id = "alaves"`,
 - **Honestidad estadística**: el objetivo es batir baselines y acercarse a las
   cuotas de mercado, no "acertar todo".
 
-## Próximos pasos (F3)
+## Próximos pasos
 
-1. Dixon-Coles (Poisson bivariante con corrección ρ y ponderación temporal).
-2. LightGBM multiclase 1X2 sobre el feature set v1 (variantes con y sin cuotas).
-3. Calibración isotónica + reliability diagrams.
-4. Backtesting walk-forward completo contra los baselines de F2
-   (criterios de aceptación de SPEC §12).
+1. **F4**: simulador Monte Carlo de la clasificación (`alaves simulate`), sobre
+   las probabilidades 1X2 del ensemble.
+2. **F5**: explicabilidad — SHAP sobre la variante sin cuotas, ablation study.
+3. **F6**: dashboard Streamlit. **F7**: modo temporada (ingesta post-jornada +
+   reentrenamiento semanal), que activará `alaves predict` con el calendario
+   2026-27 real.
