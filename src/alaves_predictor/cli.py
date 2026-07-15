@@ -1,9 +1,8 @@
 """CLI del proyecto (`alaves ...`), según SPEC §10.
 
 Implementados: ingest --historical (F1), status, validate, features,
-baselines (F2), train, predict, backtest (F3), simulate (F4). El resto
-(report) es un stub que indica su fase, para que la superficie del CLI
-coincida con la especificación sin prometer nada que no funcione.
+baselines (F2), train, predict, backtest (F3), simulate (F4) y
+report --importance (F5). La superficie del CLI coincide con SPEC §10.
 """
 
 from __future__ import annotations
@@ -507,9 +506,37 @@ def backtest(
 
 
 @app.command()
-def report() -> None:
-    """Informes SHAP / importancia de variables (F5)."""
-    _stub("Fase 5")
+def report(
+    importance: bool = typer.Option(
+        False, "--importance", help="Genera el informe SHAP + ablation (F5)."
+    ),
+    seasons: int = typer.Option(3, "--seasons", help="Temporadas del ablation walk-forward."),
+) -> None:
+    """Informe de importancia de variables: SHAP global, dependencia parcial y ablation (F5)."""
+    if not importance:
+        typer.secho("Indica --importance.", err=True)
+        raise typer.Exit(code=1)
+    settings = _load_settings()
+    _require_db(settings)
+    from alaves_predictor.explain.report import generate_report
+    from alaves_predictor.features.build import build_features
+    from alaves_predictor.models.train import load_latest_model
+
+    conn = db.connect(settings.data.db_path)
+    try:
+        bundle = load_latest_model(conn)
+        if bundle is None:
+            typer.secho("No hay modelo entrenado. Ejecuta `alaves train` primero.", err=True)
+            raise typer.Exit(code=1)
+        typer.echo("Calculando SHAP, dependencia parcial y ablation (tarda un poco)...")
+        df = build_features(conn, settings)
+        report_path = generate_report(bundle, df, settings, Path("docs/reports"), seasons)
+    finally:
+        conn.close()
+    typer.secho(
+        f"Informe de importancia guardado en {report_path}", fg=typer.colors.GREEN, bold=True
+    )
+    typer.echo("  Figuras PNG en docs/reports/figures/")
 
 
 if __name__ == "__main__":
