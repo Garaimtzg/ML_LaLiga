@@ -224,6 +224,12 @@ Los valores SHAP se calculan con el TreeSHAP **nativo de LightGBM**
 (`pred_contrib=True`), sin la librería `shap` (su cadena `numba` choca con
 numpy 2.x). Salida en `docs/reports/feature_importance.md` + figuras PNG.
 
+El significado de cada variable está en
+[docs/diccionario-features.md](docs/diccionario-features.md) (y en código, en
+`features/dictionary.py`, que resuelve cualquier columna y alimenta el
+apéndice del informe; un test obliga a que ninguna feature quede sin
+documentar).
+
 ## Estructura del repositorio
 
 ```

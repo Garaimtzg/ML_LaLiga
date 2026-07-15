@@ -13,6 +13,7 @@ import pandas as pd
 
 from alaves_predictor.config import Settings
 from alaves_predictor.explain import ablation, importance
+from alaves_predictor.features.dictionary import feature_dictionary
 from alaves_predictor.models.gbm_classifier import VARIANT_NO_ODDS
 from alaves_predictor.models.train import ModelBundle
 
@@ -106,7 +107,18 @@ def generate_report(
         "> pocas milésimas están dentro del ruido; lo relevante es el signo y el",
         "> orden de magnitud relativo entre bloques.",
         "",
+        "## Apéndice — diccionario de variables",
+        "",
+        "Qué significa cada columna del modelo (ordenadas por importancia SHAP;",
+        "guía general en `docs/diccionario-features.md`):",
+        "",
+        "| Variable | Significado |",
+        "|----------|-------------|",
     ]
+    dictionary = feature_dictionary(list(imp["feature"]))
+    for row in dictionary.itertuples(index=False):
+        lines.append(f"| `{row.feature}` | {row.descripcion} |")
+    lines.append("")
     path = out_dir / "feature_importance.md"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
