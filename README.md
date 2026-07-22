@@ -19,7 +19,7 @@ la clasificación final mediante simulación Monte Carlo.
 | **F3** | Modelos (Dixon-Coles + LightGBM 1X2), calibración, backtesting | ✅ **Completada** — Dixon-Coles propio, LightGBM con/sin cuotas, calibración isotónica, ensemble apilado y backtest jornada a jornada. **Ambos criterios de aceptación de SPEC §12.1 cumplidos** sobre 3 temporadas reales: ensemble sin cuotas 0.9694 < baseline Elo 0.9706; con cuotas 0.9548 ≤ cuotas de cierre + 0.01 (0.9637) |
 | **F4** | Simulador Monte Carlo de la clasificación | ✅ **Completada** — simulación vectorizada (N=10.000) sobre las P(1X2) del ensemble, con DG del Dixon-Coles para el desempate; salidas por equipo (posición esperada, P(título/Champions/Europa/descenso), puntos) y modo demo sobre temporadas históricas |
 | **F5** | Explicabilidad (SHAP) y análisis de variables | ✅ **Completada** — SHAP global (TreeSHAP nativo de LightGBM, sin la librería `shap`), beeswarm, dependencia parcial y ablation study por bloques sobre la variante sin cuotas; informe en `docs/reports/feature_importance.md` |
-| F6 | Dashboard Streamlit | Pendiente |
+| **F6** | Dashboard Streamlit | ✅ **Completada** — 6 páginas (próxima jornada, clasificación proyectada con heatmap, el Alavés en detalle, explicabilidad con waterfall por partido, rendimiento del modelo, registro de decisiones); lógica testeable en `src/`, presentación fina en `app/dashboard.py` |
 | F7 | Modo temporada: ingesta post-jornada + reentrenamiento semanal | Pendiente |
 
 ## Requisitos
@@ -90,6 +90,7 @@ uv run alaves backtest --seasons 3   # backtest jornada a jornada (~unos minutos
 | `uv run alaves predict --next` / `--matchday N` | Predice partidos programados y persiste las predicciones | ✅ F3* |
 | `uv run alaves simulate [--season S --from-matchday N]` | Monte Carlo de la clasificación proyectada | ✅ F4 |
 | `uv run alaves report --importance` | Informe SHAP / importancia de variables + ablation | ✅ F5 |
+| `uv run streamlit run app/dashboard.py` | Dashboard interactivo (6 páginas) | ✅ F6 |
 | `uv run alaves ingest --matchday N` | Ingesta post-jornada | F7 |
 
 \* `predict` está completo, pero necesita partidos con estado `scheduled` en la
@@ -230,6 +231,22 @@ El significado de cada variable está en
 apéndice del informe; un test obliga a que ninguna feature quede sin
 documentar).
 
+## Dashboard (F6)
+
+```bash
+uv run streamlit run app/dashboard.py
+```
+
+Panel interactivo (SPEC §9, ADR-025) con seis páginas: **próxima jornada**
+(predicción del Alavés + resto de la jornada), **clasificación proyectada**
+(tabla con P de cada zona + heatmap de distribución de posiciones), **el Alavés
+en detalle** (Elo, xG a favor/en contra y forma por jornada), **explicabilidad**
+(SHAP global + waterfall por partido), **rendimiento del modelo** (registro de
+versiones e historial de predicciones) y **registro de decisiones** (los ADRs).
+Toda la lógica está en `dashboard/data.py` (con tests); `app/dashboard.py` solo
+pinta. Las páginas de predicción y proyección funcionan en modo demo sobre
+temporadas históricas hasta que la F7 ingiera el calendario 2026-27.
+
 ## Estructura del repositorio
 
 ```
@@ -247,8 +264,9 @@ documentar).
 │   ├── features/                     # elo.py (Elo interno), form.py, build.py
 │   ├── models/                       # dixon_coles.py, gbm_classifier.py,
 │   │                                 # calibration.py, ensemble.py, linear.py, train.py
-│   ├── simulation/                   # monte_carlo.py (clasificación proyectada)
+│   ├── simulation/                   # monte_carlo.py + project.py (proyección)
 │   ├── explain/                      # importance.py (SHAP), ablation.py, report.py
+│   ├── dashboard/                    # data.py (datos del dashboard, testeable)
 │   ├── evaluation/                   # metrics.py, baselines.py, backtest.py
 │   ├── config.py                     # carga tipada de la configuración
 │   ├── cli.py                        # CLI typer (`alaves ...`)
@@ -263,7 +281,8 @@ documentar).
 │           ├── fbref.py
 │           ├── understat.py          # xG de relleno vía API interna (ADR-011)
 │           └── clubelo.py
-└── tests/                            # 103 tests; fixtures congelados en tests/fixtures/
+├── app/dashboard.py                  # dashboard Streamlit (solo presentación)
+└── tests/                            # 139 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)
@@ -294,6 +313,7 @@ documentar).
 | [022](docs/decisions/022-calibracion-loso-para-pesos-del-apilado.md) | Selección de pesos del apilado con calibración leave-one-season-out (comparación justa entre componentes) |
 | [023](docs/decisions/023-simulador-monte-carlo.md) | Simulador Monte Carlo de la clasificación: muestreo del 1X2 + DG del Dixon-Coles, zonas parametrizadas, modo demo |
 | [024](docs/decisions/024-explicabilidad-shap-nativo-y-ablation.md) | Explicabilidad con TreeSHAP nativo de LightGBM (evita la librería `shap`/`numba`) + ablation study por bloques |
+| [025](docs/decisions/025-dashboard-streamlit.md) | Dashboard Streamlit con lógica testeable en `src/` y presentación fina en `app/`; proyección compartida con el CLI |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 
@@ -307,8 +327,8 @@ documentar).
 
 ## Próximos pasos
 
-1. **F6**: dashboard Streamlit (predicciones, clasificación proyectada,
-   explicabilidad con waterfall por partido, rendimiento del modelo, registro
-   de decisiones).
-2. **F7**: modo temporada (ingesta post-jornada + reentrenamiento semanal), que
-   activará `alaves predict`/`simulate` con el calendario 2026-27 real.
+1. **F7** (última fase): modo temporada — ingesta post-jornada
+   (`alaves ingest --matchday N`) con el calendario 2026-27 real de
+   API-Football, reentrenamiento semanal y evaluación de las predicciones
+   ya persistidas. Activa por completo `predict`/`simulate` y las páginas de
+   próxima jornada y clasificación proyectada del dashboard.

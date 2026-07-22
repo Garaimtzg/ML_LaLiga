@@ -392,11 +392,11 @@ def simulate(
     settings = _load_settings()
     _require_db(settings)
     from alaves_predictor.features.build import build_features
-    from alaves_predictor.models.gbm_classifier import VARIANT_NO_ODDS, VARIANT_WITH_ODDS
     from alaves_predictor.models.train import load_latest_model
-    from alaves_predictor.simulation import monte_carlo as mc
+    from alaves_predictor.simulation.project import project_standings
 
     target_season = season or settings.current_season
+    cutoff: int | None = from_matchday if season is not None else None
     conn = db.connect(settings.data.db_path)
     try:
         bundle = load_latest_model(conn)
@@ -404,42 +404,25 @@ def simulate(
             typer.secho("No hay modelo entrenado. Ejecuta `alaves train` primero.", err=True)
             raise typer.Exit(code=1)
         df = build_features(conn, settings, include_scheduled=True)
-        df = df[df["season"] == target_season]
-        if df.empty:
-            typer.secho(f"No hay partidos de {target_season} en la BD.", fg=typer.colors.YELLOW)
-            raise typer.Exit(code=1)
-
-        if season is not None:  # modo demo sobre temporada histórica
-            played = df[df["matchday"] < from_matchday]
-            remaining_rows = df[df["matchday"] >= from_matchday]
-        else:  # temporada en curso: jugados vs programados
-            played = df[df["result"].notna()]
-            remaining_rows = df[df["result"].isna()]
-
-        if remaining_rows.empty:
-            typer.secho(
-                f"No hay partidos por simular en {target_season}. "
-                "El calendario de la temporada en curso se ingiere en la F7.",
-                fg=typer.colors.YELLOW,
-            )
-            raise typer.Exit(code=1)
-
-        has_odds = remaining_rows["imp_home"].notna().all()
-        variant = VARIANT_NO_ODDS
-        if not no_odds and VARIANT_WITH_ODDS in bundle.variants and has_odds:
-            variant = VARIANT_WITH_ODDS
-        preds = bundle.predict_matches(remaining_rows, variant)
-        remaining = mc.build_remaining(preds, bundle.dixon_coles)
+        projection = project_standings(
+            bundle, df, settings, target_season, cutoff, n=n, seed=seed, no_odds=no_odds
+        )
     finally:
         conn.close()
 
-    teams = sorted(set(df["home_id"]) | set(df["away_id"]))
-    standings = mc.current_standings(played)
+    if projection is None:
+        typer.secho(
+            f"No hay partidos por simular en {target_season}. El calendario de la "
+            "temporada en curso se ingiere en la F7.",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(code=1)
+
+    result, teams = projection.result, projection.teams
     typer.echo(
-        f"Simulando {target_season} desde {len(played)} partidos jugados y "
-        f"{len(remaining)} por jugar ({n} simulaciones, variante {variant})..."
+        f"Simulando {target_season} desde {projection.n_played} partidos jugados y "
+        f"{projection.n_remaining} por jugar ({n} simulaciones, variante {projection.variant})..."
     )
-    result = mc.simulate(standings, remaining, teams, n=n, seed=seed, zones=settings.league.zones)
 
     ranked = sorted(teams, key=result.expected_position)
     header = f"{'#':>2} {'Equipo':22} {'Pts':>5} {'Pos':>4}  {'Título':>6} {'Champ':>6} {'Eur':>5} {'Desc':>6}"  # noqa: E501
