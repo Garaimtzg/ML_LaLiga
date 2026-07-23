@@ -596,33 +596,44 @@ def ingest_fixtures(
     cfg = settings.sources.football_data
     season = settings.current_season
 
-    texts: list[str] = []
-    remote_error: str | None = None
+    # Cada origen (remoto y local) se lee y parsea de forma AISLADA: si el
+    # remoto viene vacío o con formato raro (típico fuera de temporada), no
+    # debe tumbar el calendario local que el usuario haya sembrado.
+    sources: list[tuple[str, str]] = []  # (etiqueta, texto)
+    problems: list[str] = []
     try:
-        texts.append(
-            fetch_text(
-                football_data.fixtures_url(cfg),
-                settings.data.raw_dir / "football_data" / "fixtures.csv",
-                rate_limit_seconds=cfg.rate_limit_seconds,
-                force=force,
-                encoding="latin-1",
+        sources.append(
+            (
+                "remoto",
+                fetch_text(
+                    football_data.fixtures_url(cfg),
+                    settings.data.raw_dir / "football_data" / "fixtures.csv",
+                    rate_limit_seconds=cfg.rate_limit_seconds,
+                    force=force,
+                    encoding="utf-8",
+                ),
             )
         )
     except ETLError as exc:
-        remote_error = str(exc)  # sin red o sin datos aún: se intenta el local
+        problems.append(f"remoto: {exc}")
 
     local = Path(cfg.local_fixtures_file)
     if local.exists():
-        texts.append(local.read_text(encoding="utf-8"))
+        sources.append(("local", local.read_text(encoding="utf-8")))
 
-    if not texts:
+    fixtures: list[football_data.FootballDataFixture] = []
+    for label, text in sources:
+        try:
+            fixtures.extend(football_data.parse_fixtures(text, cfg.division))
+        except SourceFormatError as exc:
+            problems.append(f"{label}: {exc}")
+
+    if not fixtures and not local.exists() and problems:
         raise SourceDownloadError(
-            f"No hay calendario disponible: el remoto falló ({remote_error}) y no "
-            f"existe el archivo local '{local}'. Crea ese CSV (formato football-data: "
-            "Div,Date,Time,HomeTeam,AwayTeam) con el calendario oficial para sembrarlo."
+            "No hay calendario disponible (" + "; ".join(problems) + "). Crea el archivo "
+            f"local '{local}' (formato football-data: Div,Date,Time,HomeTeam,AwayTeam) "
+            "con el calendario oficial para sembrarlo."
         )
-
-    fixtures = [f for text in texts for f in football_data.parse_fixtures(text, cfg.division)]
     now = datetime.now(UTC).isoformat()
 
     inserted = 0

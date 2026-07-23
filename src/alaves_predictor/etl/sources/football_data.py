@@ -93,7 +93,7 @@ def parse_fixtures(text: str, division: str) -> list[FootballDataFixture]:
     se filtra por la división pedida. Trae cuotas de apertura pero, obviamente,
     ni marcador ni estadísticas (aún no se ha jugado).
     """
-    reader = csv.DictReader(io.StringIO(text))
+    reader = csv.DictReader(io.StringIO(_strip_bom(text)))
     if reader.fieldnames is None:
         raise SourceFormatError("fixtures.csv de football-data vacío o sin cabecera.")
     required = {"Div", "Date", "HomeTeam", "AwayTeam"}
@@ -128,6 +128,20 @@ def parse_fixtures(text: str, division: str) -> list[FootballDataFixture]:
     return fixtures
 
 
+def _strip_bom(text: str) -> str:
+    """Quita la marca de orden de bytes (BOM) que football-data pone a veces.
+
+    Sin quitarla, `csv.DictReader` lee la primera columna como '﻿Div' en
+    vez de 'Div'. Se cubren las dos formas: el BOM Unicode (fichero leído como
+    UTF-8) y sus bytes vistos como latin-1.
+    """
+    if text.startswith("﻿"):
+        return text[1:]
+    if text.startswith("\xef\xbb\xbf"):
+        return text[3:]
+    return text
+
+
 def _parse_date(raw: str) -> date:
     for fmt in ("%d/%m/%Y", "%d/%m/%y"):
         try:
@@ -155,7 +169,7 @@ def _odds_triplet(row: dict[str, str], prefix: str) -> tuple[float, float, float
 
 def parse_csv(text: str) -> list[FootballDataMatch]:
     """Parsea el CSV de una temporada. Falla ruidosamente ante formato inesperado."""
-    reader = csv.DictReader(io.StringIO(text))
+    reader = csv.DictReader(io.StringIO(_strip_bom(text)))
     if reader.fieldnames is None:
         raise SourceFormatError("CSV de football-data vacío o sin cabecera.")
     required = {"Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "FTR"}

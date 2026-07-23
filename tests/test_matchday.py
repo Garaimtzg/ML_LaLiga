@@ -32,6 +32,14 @@ def test_parse_fixtures_filtra_division_y_lee_cuotas():
     assert first.odds_open["bet365"] == (2.10, 3.20, 3.60)
 
 
+def test_parse_fixtures_tolera_bom():
+    """football-data a veces sirve el CSV con BOM; no debe romper el parseo."""
+    with_bom = "﻿" + FIXTURES_CSV  # BOM Unicode al inicio
+    assert len(fd.parse_fixtures(with_bom, "SP1")) == 2
+    latin1_bom = "\xef\xbb\xbf" + FIXTURES_CSV  # BOM leído como latin-1
+    assert len(fd.parse_fixtures(latin1_bom, "SP1")) == 2
+
+
 def test_ingest_fixtures_inserta_programados(mini_db, mini_settings, fake_fetch):
     registry = TeamRegistry(mini_settings.teams)
     registry.seed_db(mini_db)
