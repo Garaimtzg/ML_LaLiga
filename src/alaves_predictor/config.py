@@ -120,6 +120,8 @@ class FootballDataConfig(BaseModel):
     base_url: str
     division: str = "SP1"
     rate_limit_seconds: float = 1.0
+    # Archivo único de próximos partidos de todas las ligas (F7, ADR-026).
+    fixtures_url: str = "https://www.football-data.co.uk/fixtures.csv"
 
 
 class FBrefConfig(BaseModel):

@@ -112,6 +112,8 @@ weight_grid_step = 0.05
 base_url = "https://www.football-data.co.uk/mmz4281"
 division = "SP1"               # Primera División española
 rate_limit_seconds = 1.0
+# Calendario de próximos partidos para el modo temporada (F7, ADR-026).
+fixtures_url = "https://www.football-data.co.uk/fixtures.csv"
 
 [sources.fbref]
 # xG por partido y jornada oficial, de la página Scores & Fixtures (ADR-008).

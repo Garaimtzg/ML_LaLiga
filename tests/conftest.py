@@ -75,7 +75,9 @@ def mini_settings(tmp_path: Path) -> Settings:
         features=FeaturesConfig(derbies=[["alaves", "real-sociedad"]]),
         sources=SourcesConfig(
             football_data=FootballDataConfig(
-                base_url="https://fd.test/mmz4281", rate_limit_seconds=0.0
+                base_url="https://fd.test/mmz4281",
+                rate_limit_seconds=0.0,
+                fixtures_url="https://fd.test/fixtures.csv",
             ),
             fbref=FBrefConfig(base_url="https://fbref.test/en/comps", rate_limit_seconds=0.0),
             understat=UnderstatConfig(
@@ -94,12 +96,14 @@ def fake_fetch(monkeypatch: pytest.MonkeyPatch):
     """Sustituye fetch_text en el orquestador por un lector de fixtures según URL."""
 
     def _fetch(url: str, cache_path: Path, **kwargs) -> str:
+        if "fixtures" in url:  # calendario de próximos partidos (F7)
+            return (FIXTURES / "football_data_fixtures_mini.csv").read_text()
         if "fd.test" in url:
             return (FIXTURES / "football_data_mini.csv").read_text()
         if "fbref.test" in url:
             return (FIXTURES / "fbref_schedule_mini.html").read_text()
         if "us.test" in url:
-            assert "getLeagueData/Mini%20liga/2018" in url  # endpoint nuevo (ADR-011)
+            assert "getLeagueData/Mini%20liga/" in url  # endpoint nuevo (ADR-011)
             return (FIXTURES / "understat_league_mini.json").read_text()
         if "elo.test" in url:
             club = url.rsplit("/", 1)[-1]
