@@ -36,15 +36,21 @@ def _load_settings() -> Settings:
 @app.command()
 def ingest(
     historical: bool = typer.Option(False, "--historical", help="ETL histórico completo (F1)."),
-    matchday: int | None = typer.Option(None, "--matchday", help="Ingesta post-jornada (F7)."),
+    matchday: bool = typer.Option(
+        False, "--matchday", help="Ciclo post-jornada de la temporada en curso (F7)."
+    ),
     force: bool = typer.Option(False, "--force", help="Re-descarga aunque exista cache local."),
 ) -> None:
-    """Ingesta de datos: histórica (--historical) o post-jornada (--matchday, F7)."""
-    if matchday is not None:
-        typer.secho("La ingesta post-jornada llega en la Fase 7.", fg=typer.colors.YELLOW)
-        raise typer.Exit(code=1)
+    """Ingesta de datos: histórica (--historical) o post-jornada (--matchday, F7).
+
+    `--matchday` no lleva número: el ciclo refresca toda la temporada en curso
+    (los nuevos resultados y el calendario) de una vez.
+    """
+    if matchday:
+        _run_matchday_cycle(force=force)
+        return
     if not historical:
-        typer.secho("Indica --historical (o --matchday N cuando exista la F7).", err=True)
+        typer.secho("Indica --historical o --matchday.", err=True)
         raise typer.Exit(code=1)
 
     settings = _load_settings()
@@ -77,6 +83,127 @@ def ingest(
     for warning in report.warnings:
         typer.secho(f"  AVISO: {warning}", fg=typer.colors.YELLOW)
     typer.echo("Ejecuta `alaves validate` para certificar la BD.")
+
+
+def _run_matchday_cycle(*, force: bool) -> None:
+    """Ciclo post-jornada de SPEC §3.3: ingesta → evalúa → reentrena → predice → simula.
+
+    Cada paso es robusto: si falta el prerrequisito (sin resultados nuevos, sin
+    modelo, sin calendario) se avisa y se continúa, en vez de romper el ciclo.
+    """
+    settings = _load_settings()
+    from alaves_predictor.etl.ingest import ingest_matchday
+    from alaves_predictor.evaluation.season import evaluate_season
+    from alaves_predictor.features.build import build_features
+    from alaves_predictor.models.train import load_latest_model, register_model, train_models
+
+    conn = db.connect(settings.data.db_path)
+    try:
+        # 1-3. Ingesta de la temporada en curso (resultados, xG, calendario, Elo)
+        typer.echo("Ingiriendo la temporada en curso (resultados, xG, calendario, Elo)...")
+        try:
+            report = ingest_matchday(conn, settings, force=force)
+        except ETLError as exc:
+            typer.secho(f"ERROR de ingesta: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1) from exc
+        typer.secho(
+            f"  {report.season}: {report.finished} jugados ({report.xg_coverage} con xG), "
+            f"{report.scheduled} programados.",
+            fg=typer.colors.GREEN,
+        )
+        for warning in report.warnings:
+            typer.secho(f"  AVISO: {warning}", fg=typer.colors.YELLOW)
+
+        # 4. Evaluar las predicciones ya persistidas cuyo resultado se conoce
+        perf = evaluate_season(conn, settings)
+        if perf.n_resolved:
+            m = perf.metrics
+            typer.secho(
+                f"Rendimiento en {perf.season} ({perf.n_resolved} predicciones resueltas): "
+                f"log-loss={m['log_loss']:.4f}  acc={m['accuracy']:.3f}",
+                bold=True,
+            )
+        else:
+            typer.echo("Aún no hay predicciones pasadas que evaluar.")
+
+        # 5. Reentrenar con toda la historia + lo nuevo, y registrar la versión
+        df = build_features(conn, settings, include_scheduled=True)
+        try:
+            bundle = train_models(df, settings)
+            decision = register_model(conn, settings, bundle)
+            state = "promocionado" if decision.promoted else "NO promocionado"
+            typer.secho(f"Modelo reentrenado {bundle.model_version} ({state}).", bold=True)
+            active = load_latest_model(conn)
+        except ValueError as exc:
+            typer.secho(f"  No se reentrena: {exc}", fg=typer.colors.YELLOW)
+            active = load_latest_model(conn)
+
+        # 6-7. Predecir la próxima jornada programada y simular la clasificación
+        if active is None:
+            typer.secho("Sin modelo disponible; no se predice ni simula.", fg=typer.colors.YELLOW)
+            return
+        _predict_and_simulate_next(conn, settings, active, df)
+    finally:
+        conn.close()
+
+
+def _predict_and_simulate_next(conn, settings, bundle, features) -> None:
+    """Predice la próxima jornada programada, persiste, y simula la clasificación."""
+    from datetime import UTC, datetime
+
+    from alaves_predictor.features.build import persist_features
+    from alaves_predictor.models.gbm_classifier import VARIANT_NO_ODDS, VARIANT_WITH_ODDS
+    from alaves_predictor.simulation.project import project_standings
+
+    scheduled = features[
+        features["result"].isna()
+        & (features["season"] == settings.current_season)
+        & features["matchday"].notna()
+    ]
+    if scheduled.empty:
+        typer.secho(
+            "No hay partidos programados: nada que predecir ni simular.", fg=typer.colors.YELLOW
+        )
+        return
+    next_md = int(scheduled["matchday"].min())
+    rows = scheduled[scheduled["matchday"] == next_md]
+    variant = VARIANT_NO_ODDS
+    if VARIANT_WITH_ODDS in bundle.variants and rows["imp_home"].notna().all():
+        variant = VARIANT_WITH_ODDS
+    preds = bundle.predict_matches(rows, variant)
+    persist_features(conn, rows, settings)
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    for p in preds.itertuples(index=False):
+        conn.execute(
+            "INSERT INTO predictions (match_id, model_version, created_at, p_home, p_draw, "
+            "p_away, pred_result, pred_score, expected_goals_h, expected_goals_a) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                p.match_id,
+                bundle.model_version,
+                now,
+                p.p_home,
+                p.p_draw,
+                p.p_away,
+                p.pred_result,
+                p.pred_score,
+                p.expected_goals_h,
+                p.expected_goals_a,
+            ),
+        )
+    conn.commit()
+    typer.secho(f"Jornada {next_md}: {len(preds)} predicciones persistidas.", fg=typer.colors.GREEN)
+
+    projection = project_standings(bundle, features, settings, settings.current_season)
+    if projection is not None:
+        focus = settings.focus_team
+        r = projection.result
+        if focus in projection.teams:
+            name = settings.teams[focus].name if focus in settings.teams else focus
+            typer.echo(
+                f"Proyección del {name}: pos. esperada {r.expected_position(focus):.1f}, "
+                f"P(descenso) {r.prob_zone(focus, 'descenso') * 100:.1f}%."
+            )
 
 
 @app.command()

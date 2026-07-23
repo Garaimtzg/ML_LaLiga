@@ -20,10 +20,12 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 from alaves_predictor.config import Settings
 from alaves_predictor.etl import db
 from alaves_predictor.etl.errors import (
+    ETLError,
     SourceConsistencyError,
     SourceDownloadError,
     SourceFormatError,
@@ -70,6 +72,40 @@ def assign_matchdays(conn: sqlite3.Connection, season: str) -> None:
         conn.execute(
             "UPDATE matches SET matchday = ? WHERE match_id = ?", (matchday, row["match_id"])
         )
+
+
+def assign_scheduled_matchdays(conn: sqlite3.Connection, season: str, gap_days: int = 3) -> None:
+    """Asigna jornada a los partidos PROGRAMADOS agrupando por fechas cercanas (F7).
+
+    El fixtures.csv no trae número de jornada. Se ordenan los programados por
+    fecha y se agrupan en jornadas: un salto de más de `gap_days` días respecto
+    al partido anterior abre una jornada nueva (una jornada de LaLiga ocupa
+    ~viernes-lunes). Se continúa desde la última jornada ya jugada. No toca los
+    partidos jugados (esos conservan la jornada oficial de FBref).
+    """
+    max_finished = (
+        conn.execute(
+            "SELECT MAX(matchday) AS m FROM matches WHERE season = ? AND status = 'finished'",
+            (season,),
+        ).fetchone()["m"]
+        or 0
+    )
+    rows = conn.execute(
+        "SELECT match_id, date FROM matches WHERE season = ? AND status = 'scheduled' "
+        "ORDER BY date, match_id",
+        (season,),
+    ).fetchall()
+    matchday = max_finished + 1
+    prev: date | None = None
+    for row in rows:
+        current = date.fromisoformat(row["date"])
+        if prev is not None and (current - prev).days > gap_days:
+            matchday += 1
+        conn.execute(
+            "UPDATE matches SET matchday = ? WHERE match_id = ?", (matchday, row["match_id"])
+        )
+        prev = current
+    conn.commit()
 
 
 def ingest_football_data_season(
@@ -535,6 +571,205 @@ def ingest_clubelo(
         rows_by_team[team_id] = inserted
     conn.commit()
     return rows_by_team, unavailable
+
+
+def ingest_fixtures(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    registry: TeamRegistry,
+    *,
+    force: bool = False,
+) -> tuple[int, list[str]]:
+    """Inserta los próximos partidos de la temporada actual como 'scheduled' (F7).
+
+    Dos orígenes que se combinan (ADR-026):
+    1. El fixtures.csv global de football-data (los próximos encuentros; a
+       principio de temporada puede no listar aún la liga).
+    2. Un archivo LOCAL opcional (`[sources.football_data].local_fixtures_file`,
+       mismo formato) para sembrar el calendario oficial a mano hasta que
+       football-data lo publique. Si el remoto falla, el local basta.
+
+    Filtra la división y guarda cada encuentro no jugado con sus cuotas de
+    apertura. Nunca pisa un partido ya 'finished'. Los equipos sin alias en
+    config/teams.toml se saltan y se devuelven para avisar.
+    """
+    cfg = settings.sources.football_data
+    season = settings.current_season
+
+    # Cada origen (remoto y local) se lee y parsea de forma AISLADA: si el
+    # remoto viene vacío o con formato raro (típico fuera de temporada), no
+    # debe tumbar el calendario local que el usuario haya sembrado.
+    sources: list[tuple[str, str]] = []  # (etiqueta, texto)
+    problems: list[str] = []
+    try:
+        sources.append(
+            (
+                "remoto",
+                fetch_text(
+                    football_data.fixtures_url(cfg),
+                    settings.data.raw_dir / "football_data" / "fixtures.csv",
+                    rate_limit_seconds=cfg.rate_limit_seconds,
+                    force=force,
+                    encoding="utf-8",
+                ),
+            )
+        )
+    except ETLError as exc:
+        problems.append(f"remoto: {exc}")
+
+    local = Path(cfg.local_fixtures_file)
+    if local.exists():
+        sources.append(("local", local.read_text(encoding="utf-8")))
+
+    fixtures: list[football_data.FootballDataFixture] = []
+    for label, text in sources:
+        try:
+            fixtures.extend(football_data.parse_fixtures(text, cfg.division))
+        except SourceFormatError as exc:
+            problems.append(f"{label}: {exc}")
+
+    if not fixtures and not local.exists() and problems:
+        raise SourceDownloadError(
+            "No hay calendario disponible (" + "; ".join(problems) + "). Crea el archivo "
+            f"local '{local}' (formato football-data: Div,Date,Time,HomeTeam,AwayTeam) "
+            "con el calendario oficial para sembrarlo."
+        )
+    now = datetime.now(UTC).isoformat()
+
+    inserted = 0
+    unknown: set[str] = set()
+    for f in fixtures:
+        if not (
+            registry.knows("football_data", f.home_team)
+            and registry.knows("football_data", f.away_team)
+        ):
+            unknown.update(
+                name
+                for name in (f.home_team, f.away_team)
+                if not registry.knows("football_data", name)
+            )
+            continue
+        home_id = registry.resolve("football_data", f.home_team)
+        away_id = registry.resolve("football_data", f.away_team)
+        match_id = make_match_id(season, home_id, away_id)
+        existing = conn.execute(
+            "SELECT status FROM matches WHERE match_id = ?", (match_id,)
+        ).fetchone()
+        if existing and existing["status"] == "finished":
+            continue  # ya jugado: el resultado manda sobre el calendario
+        db.upsert(
+            conn,
+            "matches",
+            {
+                "match_id": match_id,
+                "season": season,
+                "matchday": None,
+                "date": f.match_date.isoformat(),
+                "home_id": home_id,
+                "away_id": away_id,
+                "home_goals": None,
+                "away_goals": None,
+                "status": "scheduled",
+                "source": football_data.SOURCE_NAME,
+                "fetched_at": now,
+            },
+            key_cols=["match_id"],
+        )
+        for bookmaker, triplet in f.odds_open.items():
+            db.upsert(
+                conn,
+                "odds",
+                {
+                    "match_id": match_id,
+                    "bookmaker": bookmaker,
+                    "open_h": triplet[0],
+                    "open_d": triplet[1],
+                    "open_a": triplet[2],
+                    "close_h": None,
+                    "close_d": None,
+                    "close_a": None,
+                    "source": football_data.SOURCE_NAME,
+                    "fetched_at": now,
+                },
+                key_cols=["match_id", "bookmaker"],
+            )
+        inserted += 1
+    conn.commit()
+    return inserted, sorted(unknown)
+
+
+@dataclass
+class MatchdayReport:
+    """Resumen de una ingesta post-jornada (F7)."""
+
+    season: str
+    finished: int = 0
+    scheduled: int = 0
+    xg_coverage: int = 0
+    warnings: list[str] = field(default_factory=list)
+
+
+def ingest_matchday(
+    conn: sqlite3.Connection, settings: Settings, *, force: bool = True
+) -> MatchdayReport:
+    """Ingesta de la temporada en curso: resultados nuevos, xG, calendario y Elo (F7).
+
+    Refresca todo lo temporal de la temporada actual. Cada fuente que falle
+    degrada con aviso (la BD manda, la red es el medio); nunca aborta el ciclo
+    entero por una fuente caída. `force=True` por defecto: los archivos de la
+    temporada en curso se actualizan cada semana.
+    """
+    registry = TeamRegistry(settings.teams)
+    db.init_schema(conn)
+    registry.seed_db(conn)
+    season = settings.current_season
+    report = MatchdayReport(season=season)
+
+    # 1. Resultados jugados de la temporada actual (el CSV crece cada jornada).
+    try:
+        report.finished = ingest_football_data_season(conn, season, settings, registry, force=force)
+        assign_matchdays(conn, season)
+    except ETLError as exc:
+        report.warnings.append(
+            f"football-data aún no publica resultados de {season} ({exc}); "
+            "se continúa con el calendario."
+        )
+
+    # 2. xG: FBref directo (o Wayback) y relleno con Understat (ADR-008/011).
+    if report.finished:
+        try:
+            _, via = ingest_fbref_season(conn, season, settings, registry, force=force)
+            if via != fbref.SOURCE_NAME:
+                report.warnings.append(f"{season}: xG/calendario de FBref vía Wayback Machine.")
+        except ETLError as exc:
+            report.warnings.append(f"FBref no disponible para {season}: {exc}")
+        if _xg_coverage(conn, season) < report.finished:
+            try:
+                filled = ingest_understat_xg(conn, season, settings, registry, force=force)
+                if filled:
+                    report.warnings.append(f"{season}: xG de {filled} partidos vía Understat.")
+            except ETLError as exc:
+                report.warnings.append(f"Understat no disponible para {season}: {exc}")
+    report.xg_coverage = _xg_coverage(conn, season)
+
+    # 3. Calendario de próximos partidos (fixtures) + jornada de los programados.
+    try:
+        report.scheduled, unknown = ingest_fixtures(conn, settings, registry, force=force)
+        assign_scheduled_matchdays(conn, season)
+        if unknown:
+            report.warnings.append(
+                f"Equipos del calendario sin alias en config/teams.toml: {', '.join(unknown)}."
+            )
+    except ETLError as exc:
+        report.warnings.append(f"No se pudo obtener el calendario de próximos partidos: {exc}")
+
+    # 4. Elo reciente de ClubElo (force: queremos el rating más actual).
+    _, elo_unavailable = ingest_clubelo(conn, settings, registry, force=force)
+    if elo_unavailable:
+        report.warnings.append(
+            f"ClubElo no responde para: {', '.join(elo_unavailable)} (conservan el Elo en BD)."
+        )
+    return report
 
 
 def ingest_historical(

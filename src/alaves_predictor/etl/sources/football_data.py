@@ -62,6 +62,15 @@ class FootballDataMatch(BaseModel):
     odds_close: dict[str, tuple[float, float, float]] = {}
 
 
+class FootballDataFixture(BaseModel):
+    """Un partido PROGRAMADO (aún sin jugar) del archivo de fixtures."""
+
+    match_date: date
+    home_team: str
+    away_team: str
+    odds_open: dict[str, tuple[float, float, float]] = {}
+
+
 def season_code(season: str) -> str:
     """Convierte "2018-19" al código de URL "1819"."""
     start, end = season.split("-")
@@ -70,6 +79,67 @@ def season_code(season: str) -> str:
 
 def csv_url(season: str, cfg: FootballDataConfig) -> str:
     return f"{cfg.base_url}/{season_code(season)}/{cfg.division}.csv"
+
+
+def fixtures_url(cfg: FootballDataConfig) -> str:
+    """URL del archivo único de próximos partidos de todas las ligas (F7)."""
+    return cfg.fixtures_url
+
+
+def parse_fixtures(text: str, division: str) -> list[FootballDataFixture]:
+    """Partidos programados de una división del fixtures.csv global (F7).
+
+    El archivo lista los próximos encuentros de todas las ligas (columna Div);
+    se filtra por la división pedida. Trae cuotas de apertura pero, obviamente,
+    ni marcador ni estadísticas (aún no se ha jugado).
+    """
+    reader = csv.DictReader(io.StringIO(_strip_bom(text)))
+    if reader.fieldnames is None:
+        raise SourceFormatError("fixtures.csv de football-data vacío o sin cabecera.")
+    required = {"Div", "Date", "HomeTeam", "AwayTeam"}
+    missing = required - set(reader.fieldnames)
+    if missing:
+        raise SourceFormatError(
+            f"El fixtures.csv no tiene las columnas {sorted(missing)}; "
+            "la fuente puede haber cambiado de formato."
+        )
+
+    fixtures: list[FootballDataFixture] = []
+    for line_no, row in enumerate(reader, start=2):
+        if (row.get("Div") or "").strip() != division:
+            continue
+        if not (row.get("HomeTeam") or "").strip():
+            continue
+        odds_open = {}
+        for prefix, bookmaker in BOOKMAKER_PREFIXES.items():
+            if triplet := _odds_triplet(row, prefix):
+                odds_open[bookmaker] = triplet
+        try:
+            fixtures.append(
+                FootballDataFixture(
+                    match_date=_parse_date(row["Date"].strip()),
+                    home_team=row["HomeTeam"].strip(),
+                    away_team=row["AwayTeam"].strip(),
+                    odds_open=odds_open,
+                )
+            )
+        except (ValidationError, ValueError, KeyError) as exc:
+            raise SourceFormatError(f"Fila {line_no} del fixtures.csv inválida: {exc}") from exc
+    return fixtures
+
+
+def _strip_bom(text: str) -> str:
+    """Quita la marca de orden de bytes (BOM) que football-data pone a veces.
+
+    Sin quitarla, `csv.DictReader` lee la primera columna como '﻿Div' en
+    vez de 'Div'. Se cubren las dos formas: el BOM Unicode (fichero leído como
+    UTF-8) y sus bytes vistos como latin-1.
+    """
+    if text.startswith("﻿"):
+        return text[1:]
+    if text.startswith("\xef\xbb\xbf"):
+        return text[3:]
+    return text
 
 
 def _parse_date(raw: str) -> date:
@@ -99,7 +169,7 @@ def _odds_triplet(row: dict[str, str], prefix: str) -> tuple[float, float, float
 
 def parse_csv(text: str) -> list[FootballDataMatch]:
     """Parsea el CSV de una temporada. Falla ruidosamente ante formato inesperado."""
-    reader = csv.DictReader(io.StringIO(text))
+    reader = csv.DictReader(io.StringIO(_strip_bom(text)))
     if reader.fieldnames is None:
         raise SourceFormatError("CSV de football-data vacío o sin cabecera.")
     required = {"Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "FTR"}
