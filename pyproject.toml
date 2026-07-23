@@ -12,6 +12,7 @@ requires-python = ">=3.11"
 # F5 (explicabilidad): matplotlib para los gráficos del informe. Los valores
 # SHAP se calculan con el TreeSHAP nativo de LightGBM, sin la librería `shap`
 # (su cadena numba choca con numpy 2.x y Python 3.11+; ADR-024).
+# F6 (dashboard): streamlit y plotly (ADR-025).
 dependencies = [
     "beautifulsoup4>=4.15.0",
     "curl-cffi>=0.15.0",
@@ -20,10 +21,12 @@ dependencies = [
     "matplotlib>=3.11.0",
     "numpy>=2.4.6",
     "pandas>=3.0.3",
+    "plotly>=6.9.0",
     "pyarrow>=25.0.0",
     "pydantic>=2.5",
     "scikit-learn>=1.9.0",
     "scipy>=1.17.1",
+    "streamlit>=1.59.1",
     "typer>=0.12",
 ]
 

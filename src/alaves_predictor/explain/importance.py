@@ -60,6 +60,19 @@ def global_importance(model: GBMModel, df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def match_contributions(model: GBMModel, row: pd.DataFrame, outcome: str) -> pd.DataFrame:
+    """SHAP de un solo partido para una clase (H/D/A): qué empuja cada variable.
+
+    Devuelve (feature, valor, shap) ordenado por |shap|. Base de los waterfall
+    por partido del dashboard (SPEC §7.2): explica una predicción concreta.
+    """
+    contribs = shap_contributions(model, row)[0]  # (n_features, n_classes)
+    cls = _class_order(model)[OUTCOME_ORDER.index(outcome)]
+    values = to_matrix(row, model.feature_names).iloc[0].to_numpy()
+    out = pd.DataFrame({"feature": model.feature_names, "value": values, "shap": contribs[:, cls]})
+    return out.reindex(out["shap"].abs().sort_values(ascending=False).index).reset_index(drop=True)
+
+
 def plot_bar(importance: pd.DataFrame, path: Path, top: int = 20) -> Path:
     """Gráfico de barras de la importancia global de las `top` variables."""
     data = importance.head(top).iloc[::-1]  # la más importante arriba
