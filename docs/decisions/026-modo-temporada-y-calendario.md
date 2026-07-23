@@ -34,6 +34,20 @@ siguiente jornada, y simular la clasificación. Falta decidir de dónde sale el
   `finished` (el resultado manda sobre el calendario); los equipos del archivo
   sin alias en `config/teams.toml` se saltan con aviso (el archivo trae todas
   las ligas).
+- **Calendario local opcional** (`[sources.football_data].local_fixtures_file`,
+  por defecto `data/fixtures.csv`): el `fixtures.csv` remoto solo lista los
+  encuentros inminentes, así que a principio de temporada aún no trae la liga.
+  El usuario puede sembrar el calendario oficial a mano en ese CSV (mismo
+  formato) y la ingesta lo combina con el remoto; si el remoto no tiene datos
+  todavía, el local basta. Al publicarse en football-data, el remoto actualiza
+  las mismas filas (upsert idempotente).
+- **Jornada de los programados** (`assign_scheduled_matchdays`): el fixtures.csv
+  no trae número de jornada, así que se agrupan los programados por fechas
+  cercanas (salto > 3 días = jornada nueva), continuando desde la última
+  jugada. No toca la jornada oficial (FBref) de los partidos jugados.
+- **`alaves ingest --matchday`** es un flag sin número: el ciclo refresca toda
+  la temporada en curso de una vez (la N de SPEC §10 era informativa y no se
+  usa).
 - **`ingest_matchday`**: refresca todo lo temporal de la temporada en curso
   —resultados (el CSV crece cada jornada), xG (FBref/Understat), calendario y
   Elo reciente (`force=True`)— y cada fuente que falle **degrada con aviso**,

@@ -20,6 +20,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 from alaves_predictor.config import Settings
 from alaves_predictor.etl import db
@@ -71,6 +72,40 @@ def assign_matchdays(conn: sqlite3.Connection, season: str) -> None:
         conn.execute(
             "UPDATE matches SET matchday = ? WHERE match_id = ?", (matchday, row["match_id"])
         )
+
+
+def assign_scheduled_matchdays(conn: sqlite3.Connection, season: str, gap_days: int = 3) -> None:
+    """Asigna jornada a los partidos PROGRAMADOS agrupando por fechas cercanas (F7).
+
+    El fixtures.csv no trae número de jornada. Se ordenan los programados por
+    fecha y se agrupan en jornadas: un salto de más de `gap_days` días respecto
+    al partido anterior abre una jornada nueva (una jornada de LaLiga ocupa
+    ~viernes-lunes). Se continúa desde la última jornada ya jugada. No toca los
+    partidos jugados (esos conservan la jornada oficial de FBref).
+    """
+    max_finished = (
+        conn.execute(
+            "SELECT MAX(matchday) AS m FROM matches WHERE season = ? AND status = 'finished'",
+            (season,),
+        ).fetchone()["m"]
+        or 0
+    )
+    rows = conn.execute(
+        "SELECT match_id, date FROM matches WHERE season = ? AND status = 'scheduled' "
+        "ORDER BY date, match_id",
+        (season,),
+    ).fetchall()
+    matchday = max_finished + 1
+    prev: date | None = None
+    for row in rows:
+        current = date.fromisoformat(row["date"])
+        if prev is not None and (current - prev).days > gap_days:
+            matchday += 1
+        conn.execute(
+            "UPDATE matches SET matchday = ? WHERE match_id = ?", (matchday, row["match_id"])
+        )
+        prev = current
+    conn.commit()
 
 
 def ingest_football_data_season(
@@ -547,23 +582,47 @@ def ingest_fixtures(
 ) -> tuple[int, list[str]]:
     """Inserta los próximos partidos de la temporada actual como 'scheduled' (F7).
 
-    Descarga el fixtures.csv global de football-data (ADR-026), filtra la
-    división y guarda cada encuentro no jugado con sus cuotas de apertura.
-    Nunca pisa un partido ya 'finished'. Los equipos del calendario sin alias
-    en config/teams.toml se saltan y se devuelven para avisar (no se aborta:
-    el archivo trae todas las ligas y nombres que no controlamos).
+    Dos orígenes que se combinan (ADR-026):
+    1. El fixtures.csv global de football-data (los próximos encuentros; a
+       principio de temporada puede no listar aún la liga).
+    2. Un archivo LOCAL opcional (`[sources.football_data].local_fixtures_file`,
+       mismo formato) para sembrar el calendario oficial a mano hasta que
+       football-data lo publique. Si el remoto falla, el local basta.
+
+    Filtra la división y guarda cada encuentro no jugado con sus cuotas de
+    apertura. Nunca pisa un partido ya 'finished'. Los equipos sin alias en
+    config/teams.toml se saltan y se devuelven para avisar.
     """
     cfg = settings.sources.football_data
     season = settings.current_season
-    cache = settings.data.raw_dir / "football_data" / "fixtures.csv"
-    text = fetch_text(
-        football_data.fixtures_url(cfg),
-        cache,
-        rate_limit_seconds=cfg.rate_limit_seconds,
-        force=force,
-        encoding="latin-1",
-    )
-    fixtures = football_data.parse_fixtures(text, cfg.division)
+
+    texts: list[str] = []
+    remote_error: str | None = None
+    try:
+        texts.append(
+            fetch_text(
+                football_data.fixtures_url(cfg),
+                settings.data.raw_dir / "football_data" / "fixtures.csv",
+                rate_limit_seconds=cfg.rate_limit_seconds,
+                force=force,
+                encoding="latin-1",
+            )
+        )
+    except ETLError as exc:
+        remote_error = str(exc)  # sin red o sin datos aún: se intenta el local
+
+    local = Path(cfg.local_fixtures_file)
+    if local.exists():
+        texts.append(local.read_text(encoding="utf-8"))
+
+    if not texts:
+        raise SourceDownloadError(
+            f"No hay calendario disponible: el remoto falló ({remote_error}) y no "
+            f"existe el archivo local '{local}'. Crea ese CSV (formato football-data: "
+            "Div,Date,Time,HomeTeam,AwayTeam) con el calendario oficial para sembrarlo."
+        )
+
+    fixtures = [f for text in texts for f in football_data.parse_fixtures(text, cfg.division)]
     now = datetime.now(UTC).isoformat()
 
     inserted = 0
@@ -682,9 +741,10 @@ def ingest_matchday(
                 report.warnings.append(f"Understat no disponible para {season}: {exc}")
     report.xg_coverage = _xg_coverage(conn, season)
 
-    # 3. Calendario de próximos partidos (fixtures).
+    # 3. Calendario de próximos partidos (fixtures) + jornada de los programados.
     try:
         report.scheduled, unknown = ingest_fixtures(conn, settings, registry, force=force)
+        assign_scheduled_matchdays(conn, season)
         if unknown:
             report.warnings.append(
                 f"Equipos del calendario sin alias en config/teams.toml: {', '.join(unknown)}."

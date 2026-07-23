@@ -5,7 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from alaves_predictor.etl import db
-from alaves_predictor.etl.ingest import ingest_fixtures, ingest_matchday, make_match_id
+from alaves_predictor.etl.ingest import (
+    assign_scheduled_matchdays,
+    ingest_fixtures,
+    ingest_matchday,
+    make_match_id,
+)
 from alaves_predictor.etl.sources import football_data as fd
 from alaves_predictor.etl.teams import TeamRegistry
 from alaves_predictor.evaluation.season import evaluate_season, resolved_predictions
@@ -43,6 +48,31 @@ def test_ingest_fixtures_inserta_programados(mini_db, mini_settings, fake_fetch)
     mid = make_match_id(season, "alaves", "getafe")
     odds = mini_db.execute("SELECT open_h FROM odds WHERE match_id = ?", (mid,)).fetchone()
     assert odds["open_h"] == 2.10
+
+
+def test_ingest_fixtures_desde_archivo_local(mini_db, mini_settings, monkeypatch, tmp_path):
+    """Sin remoto disponible, el calendario local siembra los programados (F7)."""
+    from alaves_predictor.etl.errors import SourceDownloadError
+
+    # el remoto falla (como a principio de temporada); solo hay archivo local
+    def _boom(*args, **kwargs):
+        raise SourceDownloadError("remoto no disponible aún")
+
+    monkeypatch.setattr("alaves_predictor.etl.ingest.fetch_text", _boom)
+    local = tmp_path / "fixtures.csv"
+    local.write_text(
+        "Div,Date,Time,HomeTeam,AwayTeam\nSP1,16/08/2026,21:00,Alaves,Getafe\n",
+        encoding="utf-8",
+    )
+    mini_settings.sources.football_data.local_fixtures_file = str(local)
+
+    registry = TeamRegistry(mini_settings.teams)
+    registry.seed_db(mini_db)
+    inserted, unknown = ingest_fixtures(mini_db, mini_settings, registry)
+    assert inserted == 1 and unknown == []
+    mid = make_match_id(mini_settings.current_season, "alaves", "getafe")
+    row = mini_db.execute("SELECT status FROM matches WHERE match_id = ?", (mid,)).fetchone()
+    assert row["status"] == "scheduled"
 
 
 def test_ingest_fixtures_no_pisa_un_partido_jugado(mini_db, mini_settings, fake_fetch):
@@ -152,3 +182,44 @@ def test_evaluate_season_sobre_predicciones_resueltas(mini_db, mini_settings):
 def test_evaluate_season_sin_predicciones(mini_db, mini_settings):
     perf = evaluate_season(mini_db, mini_settings)
     assert perf.n_resolved == 0 and perf.metrics == {}
+
+
+def test_assign_scheduled_matchdays_agrupa_por_fechas(mini_db, mini_settings):
+    registry = TeamRegistry(mini_settings.teams)
+    registry.seed_db(mini_db)
+    season = mini_settings.current_season
+    now = datetime.now(UTC).isoformat()
+    # dos "jornadas": 16-17 ago (juntas) y 23 ago (>3 días después)
+    partidos = [
+        ("alaves", "getafe", "2026-08-16"),
+        ("barcelona", "real-sociedad", "2026-08-17"),
+        ("getafe", "barcelona", "2026-08-23"),
+    ]
+    for home, away, date in partidos:
+        db.upsert(
+            mini_db,
+            "matches",
+            {
+                "match_id": make_match_id(season, home, away),
+                "season": season,
+                "matchday": None,
+                "date": date,
+                "home_id": home,
+                "away_id": away,
+                "home_goals": None,
+                "away_goals": None,
+                "status": "scheduled",
+                "source": "test",
+                "fetched_at": now,
+            },
+            key_cols=["match_id"],
+        )
+    mini_db.commit()
+    assign_scheduled_matchdays(mini_db, season)
+    md = {
+        r["match_id"]: r["matchday"]
+        for r in mini_db.execute("SELECT match_id, matchday FROM matches").fetchall()
+    }
+    assert md[make_match_id(season, "alaves", "getafe")] == 1
+    assert md[make_match_id(season, "barcelona", "real-sociedad")] == 1  # misma jornada
+    assert md[make_match_id(season, "getafe", "barcelona")] == 2  # salto de fechas

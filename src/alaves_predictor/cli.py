@@ -36,15 +36,21 @@ def _load_settings() -> Settings:
 @app.command()
 def ingest(
     historical: bool = typer.Option(False, "--historical", help="ETL histórico completo (F1)."),
-    matchday: int | None = typer.Option(None, "--matchday", help="Ingesta post-jornada (F7)."),
+    matchday: bool = typer.Option(
+        False, "--matchday", help="Ciclo post-jornada de la temporada en curso (F7)."
+    ),
     force: bool = typer.Option(False, "--force", help="Re-descarga aunque exista cache local."),
 ) -> None:
-    """Ingesta de datos: histórica (--historical) o post-jornada (--matchday, F7)."""
-    if matchday is not None:
+    """Ingesta de datos: histórica (--historical) o post-jornada (--matchday, F7).
+
+    `--matchday` no lleva número: el ciclo refresca toda la temporada en curso
+    (los nuevos resultados y el calendario) de una vez.
+    """
+    if matchday:
         _run_matchday_cycle(force=force)
         return
     if not historical:
-        typer.secho("Indica --historical o --matchday N.", err=True)
+        typer.secho("Indica --historical o --matchday.", err=True)
         raise typer.Exit(code=1)
 
     settings = _load_settings()
@@ -150,7 +156,9 @@ def _predict_and_simulate_next(conn, settings, bundle, features) -> None:
     from alaves_predictor.simulation.project import project_standings
 
     scheduled = features[
-        features["result"].isna() & (features["season"] == settings.current_season)
+        features["result"].isna()
+        & (features["season"] == settings.current_season)
+        & features["matchday"].notna()
     ]
     if scheduled.empty:
         typer.secho(

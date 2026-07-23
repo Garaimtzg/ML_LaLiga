@@ -273,6 +273,21 @@ que se necesita es la lista de próximos partidos, y las alineaciones/lesiones
 de API-Football no están en el feature set v1 — no compensan su API key ni su
 límite de 100 peticiones/día.
 
+> **Ver la próxima jornada antes de que football-data publique el calendario**:
+> el `fixtures.csv` remoto solo lista los partidos inminentes, así que a
+> principio de temporada aún no trae la liga. Para sembrar el calendario oficial
+> a mano, crea `data/fixtures.csv` (formato football-data) y `alaves ingest
+> --matchday` lo recogerá:
+>
+> ```csv
+> Div,Date,Time,HomeTeam,AwayTeam
+> SP1,16/08/2026,21:00,Alaves,Getafe
+> SP1,16/08/2026,18:30,Sevilla,Valencia
+> ```
+>
+> Cuando football-data publique la temporada, actualizará esas mismas filas
+> automáticamente (upsert idempotente).
+
 ## Estructura del repositorio
 
 ```

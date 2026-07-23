@@ -122,6 +122,9 @@ class FootballDataConfig(BaseModel):
     rate_limit_seconds: float = 1.0
     # Archivo único de próximos partidos de todas las ligas (F7, ADR-026).
     fixtures_url: str = "https://www.football-data.co.uk/fixtures.csv"
+    # Calendario local opcional (mismo formato) para sembrar los fixtures a mano
+    # hasta que football-data publique la temporada (F7, ADR-026).
+    local_fixtures_file: str = "data/fixtures.csv"
 
 
 class FBrefConfig(BaseModel):

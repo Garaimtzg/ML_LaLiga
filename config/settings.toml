@@ -114,6 +114,11 @@ division = "SP1"               # Primera División española
 rate_limit_seconds = 1.0
 # Calendario de próximos partidos para el modo temporada (F7, ADR-026).
 fixtures_url = "https://www.football-data.co.uk/fixtures.csv"
+# Calendario local opcional: crea este CSV (formato football-data:
+# Div,Date,Time,HomeTeam,AwayTeam[,cuotas]) para sembrar el calendario oficial
+# a mano hasta que football-data publique la temporada. La ingesta lo combina
+# con el remoto; si el remoto aún no tiene datos, este basta.
+local_fixtures_file = "data/fixtures.csv"
 
 [sources.fbref]
 # xG por partido y jornada oficial, de la página Scores & Fixtures (ADR-008).

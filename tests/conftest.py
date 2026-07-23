@@ -78,6 +78,8 @@ def mini_settings(tmp_path: Path) -> Settings:
                 base_url="https://fd.test/mmz4281",
                 rate_limit_seconds=0.0,
                 fixtures_url="https://fd.test/fixtures.csv",
+                # por defecto sin archivo local (los tests usan el remoto falso)
+                local_fixtures_file=str(tmp_path / "no_local_fixtures.csv"),
             ),
             fbref=FBrefConfig(base_url="https://fbref.test/en/comps", rate_limit_seconds=0.0),
             understat=UnderstatConfig(
