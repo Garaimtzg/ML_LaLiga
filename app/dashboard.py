@@ -120,12 +120,36 @@ def page_next_matchday(bundle, features, settings):
     st.dataframe(table, width="stretch", hide_index=True)
 
 
-def _projection_heatmap(heat, table, focus_name):
-    """Heatmap de distribución de posiciones con marcador de posición esperada.
+# Estilo de las zonas europeas/descenso para la banda superior del heatmap.
+# (etiqueta, color); el rango de puestos viene de config ([league.zones]).
+_ZONE_STYLE = {
+    "champions": ("Champions", "#2e7d32"),
+    "europa": ("Europa", "#66bb6a"),
+    "conference": ("Conf.", "#9e9d24"),
+    "descenso": ("Descenso", "#c62828"),
+}
+
+
+def _zone_bands(zones, n_positions):
+    """Zonas visibles (recortadas al tamaño de la liga) como (label, color, low, high)."""
+    bands = []
+    for key, (label, color) in _ZONE_STYLE.items():
+        rng = zones.get(key)
+        if not rng:
+            continue
+        low, high = max(1, rng[0]), min(n_positions, rng[1])
+        if low <= high:  # la zona cae dentro de la liga
+            bands.append((label, color, low, high))
+    return bands
+
+
+def _projection_heatmap(heat, table, focus_name, zones):
+    """Heatmap de distribución de posiciones con posición esperada y zonas europeas.
 
     heat: DataFrame (filas = equipos ordenados por posición esperada, columnas =
-    puestos 1..N, valores = probabilidad). Resalta el equipo foco y superpone
-    un rombo en la posición esperada de cada equipo.
+    puestos 1..N, valores = probabilidad). Resalta el equipo foco, superpone un
+    rombo en la posición esperada de cada equipo y pinta una banda de zonas
+    (Champions/Europa en verde, descenso en rojo) sobre el eje de puestos.
     """
     teams = list(heat.index)
     positions = list(heat.columns)
@@ -157,7 +181,7 @@ def _projection_heatmap(heat, table, focus_name):
         x=expected,
         y=ylabels,
         mode="markers",
-        name="posición esperada",
+        showlegend=False,
         marker={
             "symbol": "diamond",
             "size": 9,
@@ -166,12 +190,39 @@ def _projection_heatmap(heat, table, focus_name):
         },
         hovertemplate="%{y}: esperada %{x:.1f}º<extra></extra>",
     )
+
+    # Banda de zonas sobre el eje de puestos + líneas divisorias sutiles.
+    bands = _zone_bands(zones, len(positions))
+    for label, color, low, high in bands:
+        fig.add_shape(
+            type="rect",
+            xref="x",
+            yref="paper",
+            x0=low - 0.5,
+            x1=high + 0.5,
+            y0=1.008,
+            y1=1.05,
+            fillcolor=color,
+            line_width=0,
+        )
+        fig.add_annotation(
+            x=(low + high) / 2,
+            xref="x",
+            y=1.03,
+            yref="paper",
+            text=label,
+            showarrow=False,
+            font={"size": 10, "color": "white"},
+        )
+        fig.add_vline(
+            x=high + 0.5, line={"color": "rgba(130,130,130,0.35)", "width": 1, "dash": "dot"}
+        )
+
     fig.update_yaxes(autorange="reversed")  # líder arriba, como una clasificación
-    fig.update_xaxes(title="posición final", dtick=1, side="top")
+    fig.update_xaxes(title="posición final", dtick=1)
     fig.update_layout(
-        height=max(360, 28 * len(teams)),
-        margin={"l": 10, "r": 10, "t": 40, "b": 10},
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.04, "x": 0},
+        height=max(380, 28 * len(teams)),
+        margin={"l": 10, "r": 10, "t": 46, "b": 10},
     )
     return fig
 
@@ -204,11 +255,13 @@ def page_projection(bundle, features, settings):
     st.subheader("Distribución de posiciones")
     st.caption(
         "Cada fila es un equipo (líder arriba); el color es la probabilidad de acabar en "
-        "cada puesto y el rombo ◆ marca su posición esperada. El Alavés va resaltado."
+        "cada puesto y el rombo ◆ marca su posición esperada. La banda superior señala las "
+        "zonas europeas (verde) y de descenso (rojo). El Alavés va resaltado."
     )
     heat = dd.position_heatmap(projection, settings)
     focus_name = dd.team_name(settings, settings.focus_team)
-    st.plotly_chart(_projection_heatmap(heat, table, focus_name), width="stretch")
+    fig = _projection_heatmap(heat, table, focus_name, settings.league.zones)
+    st.plotly_chart(fig, width="stretch")
 
 
 def page_focus(bundle, features, settings):
