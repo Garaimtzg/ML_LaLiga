@@ -129,6 +129,36 @@ _ZONE_STYLE = {
     "descenso": ("Descenso", "#c62828"),
 }
 
+# Fondos suaves para colorear las filas de la tabla por zona (texto oscuro
+# forzado para que se lea igual en tema claro y oscuro).
+_ZONE_ROW_COLOR = {
+    "champions": "#c8e6c9",
+    "europa": "#dcedc8",
+    "conference": "#f0f4c3",
+    "descenso": "#ffcdd2",
+}
+
+
+def _zone_for_position(position, zones):
+    """Zona (clave de config) en la que cae una posición esperada; None si media tabla."""
+    p = round(position)
+    for key in ("champions", "europa", "conference", "descenso"):
+        rng = zones.get(key)
+        if rng and rng[0] <= p <= rng[1]:
+            return key
+    return None
+
+
+def _style_projection_table(display, zones):
+    """Colorea cada fila de la tabla según la zona de su posición esperada."""
+
+    def color_row(row):
+        color = _ZONE_ROW_COLOR.get(_zone_for_position(row["Pos esperada"], zones), "")
+        css = f"background-color: {color}; color: #111827" if color else ""
+        return [css] * len(row)
+
+    return display.style.apply(color_row, axis=1)
+
 
 def _zone_bands(zones, n_positions):
     """Zonas visibles (recortadas al tamaño de la liga) como (label, color, low, high)."""
@@ -250,7 +280,8 @@ def page_projection(bundle, features, settings):
     display = table.drop(columns="team_id").copy()
     for c in ("P(título)", "P(Champions)", "P(Europa)", "P(descenso)"):
         display[c] = _pct(display[c])
-    st.dataframe(display, width="stretch", hide_index=True)
+    styled = _style_projection_table(display, settings.league.zones)
+    st.dataframe(styled, width="stretch", hide_index=True)
 
     st.subheader("Distribución de posiciones")
     st.caption(
