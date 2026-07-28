@@ -120,6 +120,62 @@ def page_next_matchday(bundle, features, settings):
     st.dataframe(table, width="stretch", hide_index=True)
 
 
+def _projection_heatmap(heat, table, focus_name):
+    """Heatmap de distribución de posiciones con marcador de posición esperada.
+
+    heat: DataFrame (filas = equipos ordenados por posición esperada, columnas =
+    puestos 1..N, valores = probabilidad). Resalta el equipo foco y superpone
+    un rombo en la posición esperada de cada equipo.
+    """
+    teams = list(heat.index)
+    positions = list(heat.columns)
+    z = heat.to_numpy()
+    ylabels = [f"◀ {t}" if t == focus_name else t for t in teams]
+    # % solo en las celdas con probabilidad relevante (una tabla 20×20 con todo
+    # el texto satura); el resto se lee por color y por el tooltip
+    threshold = 0.12
+    text = [[f"{v:.0%}" if v >= threshold else "" for v in row] for row in z]
+
+    fig = go.Figure(
+        go.Heatmap(
+            z=z,
+            x=positions,
+            y=ylabels,
+            text=text,
+            texttemplate="%{text}",
+            textfont={"size": 11, "color": "white"},
+            colorscale="Blues",
+            zmin=0.0,
+            xgap=1,
+            ygap=1,
+            hovertemplate="%{y}<br>Puesto %{x}: <b>%{z:.1%}</b><extra></extra>",
+            colorbar={"title": "prob.", "tickformat": ".0%"},
+        )
+    )
+    expected = table.set_index("Equipo")["Pos esperada"].reindex(teams).to_numpy()
+    fig.add_scatter(
+        x=expected,
+        y=ylabels,
+        mode="markers",
+        name="posición esperada",
+        marker={
+            "symbol": "diamond",
+            "size": 9,
+            "color": "#e45756",
+            "line": {"width": 1, "color": "white"},
+        },
+        hovertemplate="%{y}: esperada %{x:.1f}º<extra></extra>",
+    )
+    fig.update_yaxes(autorange="reversed")  # líder arriba, como una clasificación
+    fig.update_xaxes(title="posición final", dtick=1, side="top")
+    fig.update_layout(
+        height=max(360, 28 * len(teams)),
+        margin={"l": 10, "r": 10, "t": 40, "b": 10},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.04, "x": 0},
+    )
+    return fig
+
+
 def page_projection(bundle, features, settings):
     st.header("Clasificación proyectada")
     if bundle is None:
@@ -146,10 +202,13 @@ def page_projection(bundle, features, settings):
     st.dataframe(display, width="stretch", hide_index=True)
 
     st.subheader("Distribución de posiciones")
+    st.caption(
+        "Cada fila es un equipo (líder arriba); el color es la probabilidad de acabar en "
+        "cada puesto y el rombo ◆ marca su posición esperada. El Alavés va resaltado."
+    )
     heat = dd.position_heatmap(projection, settings)
-    fig = px.imshow(heat, aspect="auto", color_continuous_scale="Blues", labels={"color": "P"})
-    fig.update_layout(height=max(300, 22 * len(heat)), xaxis_title="posición final")
-    st.plotly_chart(fig, width="stretch")
+    focus_name = dd.team_name(settings, settings.focus_team)
+    st.plotly_chart(_projection_heatmap(heat, table, focus_name), width="stretch")
 
 
 def page_focus(bundle, features, settings):
