@@ -20,8 +20,8 @@ class LeagueConfig(BaseModel):
     zones: dict[str, list[int]] = Field(
         default_factory=lambda: {
             "titulo": [1, 1],
-            "champions": [1, 4],
-            "europa": [5, 6],
+            "champions": [1, 5],  # 4 directas + 5ª por European Performance Spot
+            "europa": [6, 6],
             "conference": [7, 7],
             "descenso": [18, 20],
         }

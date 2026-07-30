@@ -62,6 +62,31 @@ def test_projection_table_y_heatmap(bundle, synthetic_features, model_settings):
     assert heat.sum(axis=1).to_numpy() == pytest.approx(1.0)
 
 
+def test_zone_for_position_usa_los_rangos_de_config():
+    zones = {"titulo": [1, 1], "champions": [1, 5], "europa": [6, 6], "descenso": [18, 20]}
+    assert dd.zone_for_position(1, zones) == "champions"  # titulo no es zona propia
+    assert dd.zone_for_position(5.4, zones) == "champions"  # redondea al puesto
+    assert dd.zone_for_position(6, zones) == "europa"
+    assert dd.zone_for_position(12, zones) is None  # media tabla
+    assert dd.zone_for_position(19.2, zones) == "descenso"
+
+
+def test_team_position_distribution_y_zonas(bundle, synthetic_features, model_settings):
+    proj = project_standings(
+        bundle, synthetic_features, model_settings, "2021-22", from_matchday=6, n=500
+    )
+    team = proj.teams[0]
+    dist = dd.team_position_distribution(proj, team)
+    assert list(dist["posicion"]) == list(range(1, len(proj.teams) + 1))
+    assert dist["prob"].sum() == pytest.approx(1.0)  # es una distribución
+    # la zona de cada puesto sale de la config
+    assert dist.loc[dist["posicion"] == 1, "zona"].iloc[0] == "champions"
+
+    probs = dd.team_zone_probabilities(proj, team)
+    assert set(probs) == set(proj.result.zones)
+    assert all(0.0 <= v <= 1.0 for v in probs.values())
+
+
 def test_matchday_predictions_con_nombres(bundle, synthetic_features, model_settings):
     def predict(rows):
         return bundle.predict_matches(rows, "sin_cuotas")

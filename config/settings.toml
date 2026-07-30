@@ -11,13 +11,20 @@ current_season = "2026-27"
 teams_per_season = 20
 
 [league.zones]
-# Rangos de posición [desde, hasta] de cada zona (1 = líder). Reparto europeo
-# aproximado de LaLiga; ajustable sin tocar código (CLAUDE.md §8).
+# Rangos de posición [desde, hasta] de cada zona (1 = líder). Ajustable sin
+# tocar código (CLAUDE.md §8). Reparto vigente de LaLiga:
+#  - Champions: 4 plazas directas + la 5ª por "European Performance Spot"
+#    (las 2 federaciones con mejor coeficiente de la temporada). España la ha
+#    obtenido en las últimas temporadas; si la perdiera, poner [1, 4] y
+#    desplazar europa/conference un puesto hacia arriba.
+#  - Europa League: 6º de liga. El campeón de Copa del Rey también entra, pero
+#    eso no depende de la posición: no se modela (limitación documentada).
+#  - Conference: 7º (puede variar si el campeón de Copa ya está clasificado).
 titulo = [1, 1]
-champions = [1, 4]     # fase de liga de la Champions
-europa = [5, 6]        # Europa League
-conference = [7, 7]    # Conference (aprox.; varía con las copas)
-descenso = [18, 20]
+champions = [1, 5]
+europa = [6, 6]
+conference = [7, 7]
+descenso = [18, 20]    # descienden 3
 
 [seasons]
 # Temporadas históricas de entrenamiento (SPEC §5): desde 2018-19 porque no hay

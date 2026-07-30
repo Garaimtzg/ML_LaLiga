@@ -68,6 +68,38 @@ def projection_table(projection: Projection, settings: Settings) -> pd.DataFrame
     return pd.DataFrame(rows)
 
 
+def zone_for_position(position: float, zones: dict[str, list[int]]) -> str | None:
+    """Zona (clave de config) en la que cae una posición; None si es media tabla.
+
+    Se evalúan de arriba abajo y `titulo` se ignora: es un subconjunto de
+    champions y no una zona propia de la clasificación.
+    """
+    p = int(round(position))
+    for key in ("champions", "europa", "conference", "descenso"):
+        rng = zones.get(key)
+        if rng and rng[0] <= p <= rng[1]:
+            return key
+    return None
+
+
+def team_position_distribution(projection: Projection, team: str) -> pd.DataFrame:
+    """Distribución de posiciones de UN equipo: (posicion, prob, zona)."""
+    dist = projection.result.position_distribution(team)
+    zones = projection.result.zones
+    return pd.DataFrame(
+        {
+            "posicion": range(1, len(dist) + 1),
+            "prob": dist,
+            "zona": [zone_for_position(p, zones) for p in range(1, len(dist) + 1)],
+        }
+    )
+
+
+def team_zone_probabilities(projection: Projection, team: str) -> dict[str, float]:
+    """Probabilidad de cada zona configurada para un equipo."""
+    return {zone: projection.result.prob_zone(team, zone) for zone in projection.result.zones}
+
+
 def position_heatmap(projection: Projection, settings: Settings) -> pd.DataFrame:
     """Matriz equipo × posición con la probabilidad de acabar en cada puesto.
 
