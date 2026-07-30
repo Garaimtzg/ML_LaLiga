@@ -145,32 +145,25 @@ def page_next_matchday(bundle, features, settings):
     st.dataframe(table, width="stretch", hide_index=True)
 
 
-# Zonas de la clasificación: etiqueta y color base. Verdes para Europa, rojo
-# para el descenso; los rangos de puestos vienen de config ([league.zones]).
+# Zonas de la clasificación: etiqueta corta (para el gráfico), color fuerte
+# (franjas y chips) y pastel (filas de tabla). Cuatro tonos bien separados —
+# verde oscuro, lima, cian y rojo — para que Europa y Conference no se
+# confundan. Los rangos de puestos vienen de config ([league.zones]).
 _ZONE_STYLE = {
-    "champions": ("Champions", "#16a34a"),
-    "europa": ("Europa League", "#4ade80"),
-    "conference": ("Conference", "#2dd4bf"),
-    "descenso": ("Descenso", "#dc2626"),
+    "champions": ("Champions", "#15803d", "#bbf7d0"),
+    "europa": ("Europa", "#84cc16", "#e3f7b8"),
+    "conference": ("Conf.", "#0891b2", "#cffafe"),
+    "descenso": ("Descenso", "#dc2626", "#fecaca"),
 }
 
-# Nombre legible de cada zona (incluye `titulo`, que no pinta franja propia
-# por ser un subconjunto de champions).
+# Nombre completo (incluye `titulo`, que no pinta franja propia por ser un
+# subconjunto de champions).
 _ZONE_LABELS = {
     "titulo": "Título",
     "champions": "Champions",
     "europa": "Europa League",
     "conference": "Conference",
     "descenso": "Descenso",
-}
-
-# Fondos suaves (tono pastel del mismo color) para las filas de la tabla.
-# El texto se fuerza oscuro para que se lea igual en tema claro y oscuro.
-_ZONE_ROW_COLOR = {
-    "champions": "#bbf7d0",
-    "europa": "#dcfce7",
-    "conference": "#ccfbf1",
-    "descenso": "#fecaca",
 }
 
 # Escala de probabilidad en grises-violeta: neutra a propósito, para que el
@@ -184,21 +177,31 @@ _PROB_SCALE = [
 ]
 
 
-def _style_projection_table(display, zones):
-    """Colorea cada fila de la tabla según la zona de su posición esperada."""
+def _style_projection_table(display, zone_by_row):
+    """Colorea cada fila con el pastel de su zona y formatea los números.
+
+    `zone_by_row` es la serie de zonas alineada con `display` (viene del PUESTO
+    proyectado, no de la posición esperada: así hay exactamente 3 descendidos).
+    """
 
     def color_row(row):
-        color = _ZONE_ROW_COLOR.get(dd.zone_for_position(row["Pos esperada"], zones), "")
-        css = f"background-color: {color}; color: #111827" if color else ""
+        zone = zone_by_row.get(row.name)
+        pastel = _ZONE_STYLE[zone][2] if zone in _ZONE_STYLE else ""
+        css = f"background-color: {pastel}; color: #111827" if pastel else ""
         return [css] * len(row)
 
-    return display.style.apply(color_row, axis=1)
+    # Un único .format(): llamarlo dos veces resetea el formato de la primera
+    # llamada (Styler reaplica el display por defecto a las columnas no citadas).
+    fmt = {c: "{:.1%}" for c in display.columns if c.startswith("P(")}
+    fmt.update({"Pts esperados": "{:.1f}", "Pos esperada": "{:.1f}º"})
+    fmt = {c: f for c, f in fmt.items() if c in display.columns}
+    return display.style.apply(color_row, axis=1).format(fmt)
 
 
 def _zone_bands(zones, n_positions):
     """Zonas visibles (recortadas al tamaño de la liga) como (label, color, low, high)."""
     bands = []
-    for key, (label, color) in _ZONE_STYLE.items():
+    for key, (label, color, _pastel) in _ZONE_STYLE.items():
         rng = zones.get(key)
         if not rng:
             continue
@@ -257,24 +260,28 @@ def _projection_heatmap(heat, table, focus_name, zones, show_pct=True):
     )
 
     # Franjas verticales de zona: cruzan todo el mapa y tiñen las columnas.
-    for label, color, low, high in _zone_bands(zones, len(positions)):
+    # Las etiquetas se escalonan en altura porque zonas de un solo puesto
+    # (Europa 6º, Conference 7º) quedan pegadas y sus textos se solaparían.
+    for i, (label, color, low, high) in enumerate(_zone_bands(zones, len(positions))):
         fig.add_vrect(
             x0=low - 0.5,
             x1=high + 0.5,
             fillcolor=color,
-            opacity=0.22,
+            opacity=0.25,
             layer="above",
             line={"color": color, "width": 2},
-            annotation_text=label,
+            annotation_text=f"<b>{label}</b>",
             annotation_position="top",
-            annotation={"font": {"size": 11, "color": color}, "yshift": 6},
+            annotation={"font": {"size": 11, "color": color}, "yshift": 8 + 18 * (i % 2)},
         )
 
-    fig.update_yaxes(autorange="reversed")  # líder arriba, como una clasificación
-    fig.update_xaxes(title="posición final", dtick=1)
+    # Rango exacto de las filas: sin esto el área del gráfico sobra por abajo y
+    # las franjas tiñen ese hueco, que parece una casilla extra.
+    fig.update_yaxes(range=[len(teams) - 0.5, -0.5])
+    fig.update_xaxes(title="posición final", dtick=1, range=[0.5, len(positions) + 0.5])
     fig.update_layout(
         height=max(400, 30 * len(teams)),
-        margin={"l": 10, "r": 10, "t": 58, "b": 10},
+        margin={"l": 10, "r": 10, "t": 72, "b": 10},
         plot_bgcolor="rgba(0,0,0,0)",
     )
     return fig
@@ -330,14 +337,17 @@ def page_projection(bundle, features, settings):
 
     with tab_tabla:
         _zone_legend(zones)
-        display = table.drop(columns="team_id").copy()
-        for c in ("P(título)", "P(Champions)", "P(Europa)", "P(descenso)"):
-            display[c] = _pct(display[c])
-        solo_europa_descenso = st.checkbox("Mostrar solo zonas europeas y de descenso", value=False)
-        if solo_europa_descenso:
-            mask = display["Pos esperada"].map(lambda p: dd.zone_for_position(p, zones) is not None)
-            display = display[mask]
-        st.dataframe(_style_projection_table(display, zones), width="stretch", hide_index=True)
+        st.caption(
+            "El color viene del **puesto proyectado** (el orden de esta tabla), así que hay "
+            "exactamente tantos equipos por zona como plazas reparte la liga. "
+            "`Pos esperada` es la media de las simulaciones y puede diferir."
+        )
+        solo_zonas = st.checkbox("Mostrar solo zonas europeas y de descenso", value=False)
+        shown = table[table["zona"].notna()] if solo_zonas else table
+        display = shown.drop(columns=["team_id", "zona"])
+        st.dataframe(
+            _style_projection_table(display, shown["zona"]), width="stretch", hide_index=True
+        )
 
     with tab_mapa:
         st.caption(
@@ -376,16 +386,21 @@ def page_projection(bundle, features, settings):
 
 
 def _zone_legend(zones):
-    """Leyenda de zonas con sus rangos de puestos, como chips de color."""
+    """Leyenda de zonas con sus rangos de puestos.
+
+    Los chips usan el MISMO pastel que las filas de la tabla (con un borde del
+    color fuerte), para que leyenda y tabla se vean idénticas.
+    """
     chips = []
-    for key, (label, color) in _ZONE_STYLE.items():
+    for key, (_short, color, pastel) in _ZONE_STYLE.items():
         rng = zones.get(key)
         if not rng:
             continue
         span = f"{rng[0]}º" if rng[0] == rng[1] else f"{rng[0]}º–{rng[1]}º"
         chips.append(
-            f"<span style='background:{color};color:white;padding:2px 10px;"
-            f"border-radius:10px;margin-right:6px;font-size:0.82em'>{label} · {span}</span>"
+            f"<span style='background:{pastel};color:#111827;padding:3px 10px;"
+            f"border-left:5px solid {color};border-radius:4px;margin-right:8px;"
+            f"font-size:0.85em'>{_ZONE_LABELS[key]} · {span}</span>"
         )
     st.markdown(" ".join(chips), unsafe_allow_html=True)
 

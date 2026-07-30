@@ -62,6 +62,39 @@ def test_projection_table_y_heatmap(bundle, synthetic_features, model_settings):
     assert heat.sum(axis=1).to_numpy() == pytest.approx(1.0)
 
 
+def test_projection_table_asigna_zona_por_puesto_proyectado(model_settings):
+    """La zona sale del PUESTO (orden de la tabla), no de la posición esperada.
+
+    Con la posición esperada (una media) puede no haber ningún equipo en 18-20
+    y saldrían menos de 3 descendidos; por puesto siempre salen los que marca
+    la config: 5 Champions, 1 Europa, 1 Conference, 3 descenso.
+    """
+    from types import SimpleNamespace
+
+    n_teams = 20
+    teams = [f"t{i:02d}" for i in range(1, n_teams + 1)]
+    zones = model_settings.league.zones
+    # posiciones esperadas comprimidas hacia el centro (como en la realidad):
+    # ninguna cae en 18-20 pese a haber colistas claros
+    expected = {t: 3.0 + i * 0.7 for i, t in enumerate(teams)}
+    fake_result = SimpleNamespace(
+        expected_position=lambda t: expected[t],
+        points_for=lambda t: 90.0 - expected[t],
+        prob_zone=lambda t, z: 0.1,
+        zones=zones,
+    )
+    projection = SimpleNamespace(result=fake_result, teams=teams)
+
+    table = dd.projection_table(projection, model_settings)
+    assert list(table["Pos"]) == list(range(1, n_teams + 1))
+    counts = table["zona"].value_counts()
+    assert counts.get("champions", 0) == 5
+    assert counts.get("europa", 0) == 1
+    assert counts.get("conference", 0) == 1
+    assert counts.get("descenso", 0) == 3  # exactamente 3 descendidos
+    assert table["zona"].isna().sum() == n_teams - 10  # media tabla sin zona
+
+
 def test_zone_for_position_usa_los_rangos_de_config():
     zones = {"titulo": [1, 1], "champions": [1, 5], "europa": [6, 6], "descenso": [18, 20]}
     assert dd.zone_for_position(1, zones) == "champions"  # titulo no es zona propia

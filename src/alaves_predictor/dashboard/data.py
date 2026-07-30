@@ -51,12 +51,20 @@ def projection_table(projection: Projection, settings: Settings) -> pd.DataFrame
     """Tabla de proyección por equipo, ordenada por posición esperada."""
     result = projection.result
     ranked = sorted(projection.teams, key=result.expected_position)
+    zones = settings.league.zones
     rows = []
-    for team in ranked:
+    for rank, team in enumerate(ranked, start=1):
         rows.append(
             {
+                # `Pos` es el PUESTO PROYECTADO (el orden de esta tabla), no la
+                # posición esperada: al ser un ranking, garantiza exactamente
+                # tantos equipos por zona como plazas hay (3 descendidos, etc.).
+                # `Pos esperada` es la media de las simulaciones y puede no caer
+                # nunca en la zona de descenso aunque el equipo sea colista.
+                "Pos": rank,
                 "team_id": team,
                 "Equipo": team_name(settings, team),
+                "zona": zone_for_position(rank, zones),
                 "Pts esperados": round(result.points_for(team), 1),
                 "Pos esperada": round(result.expected_position(team), 1),
                 "P(título)": result.prob_zone(team, "titulo"),
