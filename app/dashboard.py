@@ -260,9 +260,11 @@ def _projection_heatmap(heat, table, focus_name, zones, show_pct=True):
     )
 
     # Franjas verticales de zona: cruzan todo el mapa y tiñen las columnas.
-    # Las etiquetas se escalonan en altura porque zonas de un solo puesto
-    # (Europa 6º, Conference 7º) quedan pegadas y sus textos se solaparían.
-    for i, (label, color, low, high) in enumerate(_zone_bands(zones, len(positions))):
+    # Solo se rotula la zona si es lo bastante ancha para que quepa el texto:
+    # Europa (6º) y Conference (7º) ocupan una única columna y sus etiquetas se
+    # pisarían entre sí. Para esas basta el color + la leyenda de encima.
+    for label, color, low, high in _zone_bands(zones, len(positions)):
+        wide_enough = (high - low + 1) >= 2
         fig.add_vrect(
             x0=low - 0.5,
             x1=high + 0.5,
@@ -270,9 +272,10 @@ def _projection_heatmap(heat, table, focus_name, zones, show_pct=True):
             opacity=0.25,
             layer="above",
             line={"color": color, "width": 2},
-            annotation_text=f"<b>{label}</b>",
+            annotation_text=f"<b>{label}</b>" if wide_enough else None,
             annotation_position="top",
-            annotation={"font": {"size": 11, "color": color}, "yshift": 8 + 18 * (i % 2)},
+            # yshift generoso: el rótulo va en el margen, nunca sobre las celdas
+            annotation={"font": {"size": 11, "color": color}, "yshift": 20},
         )
 
     # Rango exacto de las filas: sin esto el área del gráfico sobra por abajo y
@@ -350,11 +353,11 @@ def page_projection(bundle, features, settings):
         )
 
     with tab_mapa:
+        _zone_legend(zones)
         st.caption(
             "Cada fila es un equipo (líder arriba) y el color de la celda es la probabilidad "
-            "de acabar en ese puesto. Las franjas verticales marcan las zonas: **verde** "
-            f"Europa, **rojo** descenso. El rombo ámbar ◆ es la posición esperada y ★ marca "
-            f"a {focus_name}."
+            "de acabar en ese puesto. Las franjas verticales marcan las zonas de la leyenda. "
+            f"El rombo ámbar ◆ es la posición esperada y ★ marca a {focus_name}."
         )
         show_pct = st.checkbox("Mostrar porcentajes en las celdas", value=True)
         heat = dd.position_heatmap(projection, settings)
