@@ -234,6 +234,37 @@ def feature_columns(features: pd.DataFrame) -> list[str]:
     return [c for c in features.columns if c not in META_COLS]
 
 
+def in_progress_seasons(features: pd.DataFrame, settings: Settings | None = None) -> set[str]:
+    """Temporadas del frame que están empezadas pero sin terminar (ADR-027).
+
+    Distinguirlas importa porque una temporada de 30 partidos no puede juzgarse
+    como una de 380: los módulos de entrenamiento y backtesting la usan para
+    aprender, pero nunca como temporada de validación ni de test.
+
+    Dos señales, porque no todos los llamantes construyen el frame igual:
+
+    1. Filas sin `result`: `build_features(..., include_scheduled=True)` trae el
+       calendario, así que la temporada en curso se delata sola.
+    2. `settings.current_season` con partidos jugados pero menos de los de una
+       temporada entera: cubre a quien construye el frame solo con lo jugado
+       (`alaves train`), donde la señal 1 no existe.
+
+    Sin ninguna de las dos (histórico puro) devuelve el conjunto vacío, que es
+    el comportamiento de siempre.
+    """
+    partial: set[str] = set()
+    if "result" in features.columns:
+        partial |= set(features.loc[features["result"].isna(), "season"])
+        played = features[features["result"].notna()]
+    else:
+        played = features
+    if settings is not None:
+        n_played = int((played["season"] == settings.current_season).sum())
+        if 0 < n_played < settings.league.matches_per_season:
+            partial.add(settings.current_season)
+    return partial
+
+
 def persist_features(conn: sqlite3.Connection, features: pd.DataFrame, settings: Settings) -> Path:
     """Guarda el snapshot: tabla `features` (JSON por partido) + Parquet. Devuelve la ruta."""
     version = settings.features.feature_set_version

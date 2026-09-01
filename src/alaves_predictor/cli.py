@@ -223,12 +223,55 @@ def status() -> None:
             typer.echo(f"  {table:16s} {n:7d}")
         typer.secho("Partidos por temporada:", bold=True)
         for row in conn.execute(
-            "SELECT season, COUNT(*) AS n, MIN(date) AS first, MAX(date) AS last "
+            "SELECT season, COALESCE(SUM(status = 'finished'), 0) AS played, "
+            "COALESCE(SUM(status = 'scheduled'), 0) AS scheduled, "
+            "MIN(date) AS first, MAX(date) AS last "
             "FROM matches GROUP BY season ORDER BY season"
         ):
-            typer.echo(f"  {row['season']}: {row['n']:4d}  ({row['first']} → {row['last']})")
+            pending = f" + {row['scheduled']} por jugar" if row["scheduled"] else ""
+            typer.echo(
+                f"  {row['season']}: {row['played']:4d} jugados{pending}"
+                f"  ({row['first']} → {row['last']})"
+            )
+        _echo_current_season(conn, settings)
     finally:
         conn.close()
+
+
+def _echo_current_season(conn: sqlite3.Connection, settings: Settings) -> None:
+    """Estado de la temporada en curso: jornadas jugadas, próxima y predicciones."""
+    season = settings.current_season
+    row = conn.execute(
+        "SELECT COALESCE(SUM(status = 'finished'), 0) AS played, "
+        "COALESCE(SUM(status = 'scheduled'), 0) AS scheduled, "
+        "MAX(CASE WHEN status = 'finished' THEN matchday END) AS last_md, "
+        "MIN(CASE WHEN status = 'scheduled' THEN matchday END) AS next_md "
+        "FROM matches WHERE season = ?",
+        (season,),
+    ).fetchone()
+    typer.secho(f"Temporada en curso ({season}):", bold=True)
+    if not row["played"] and not row["scheduled"]:
+        typer.secho(
+            "  sin datos todavía — ejecuta `alaves ingest --matchday`.", fg=typer.colors.YELLOW
+        )
+        return
+    jugadas = row["last_md"] or 0
+    typer.echo(f"  jornadas jugadas: {jugadas}/{settings.league.rounds} ({row['played']} partidos)")
+    if row["next_md"]:
+        n_next = conn.execute(
+            "SELECT COUNT(*) AS n FROM matches WHERE season = ? AND status = 'scheduled' "
+            "AND matchday = ?",
+            (season, row["next_md"]),
+        ).fetchone()["n"]
+        typer.echo(f"  próxima jornada: {row['next_md']} ({n_next} partidos programados)")
+    else:
+        typer.echo("  sin calendario de próximos partidos.")
+    n_preds = conn.execute(
+        "SELECT COUNT(DISTINCT p.match_id) AS n FROM predictions p "
+        "JOIN matches m ON m.match_id = p.match_id WHERE m.season = ?",
+        (season,),
+    ).fetchone()["n"]
+    typer.echo(f"  partidos con predicción guardada: {n_preds}")
 
 
 @app.command()

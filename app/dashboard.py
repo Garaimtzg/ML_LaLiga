@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -164,6 +165,21 @@ _ZONE_LABELS = {
     "europa": "Europa League",
     "conference": "Conference",
     "descenso": "Descenso",
+}
+
+
+def _chip(text: str, fg: str, bg: str) -> str:
+    return (
+        f"<span style='background:{bg};color:{fg};padding:2px 10px;border-radius:10px;"
+        f"margin-right:4px;font-weight:600;font-size:0.95em'>{text}</span>"
+    )
+
+
+# Victoria/empate/derrota del equipo foco, con la misma paleta que las zonas.
+_RESULT_CHIP = {
+    "V": _chip("V", "#15803d", "#bbf7d0"),
+    "E": _chip("E", "#475569", "#e2e8f0"),
+    "D": _chip("D", "#dc2626", "#fecaca"),
 }
 
 # Escala de probabilidad en grises-violeta: neutra a propósito, para que el
@@ -414,8 +430,38 @@ def page_focus(bundle, features, settings):
     season, _ = _season_selector(features, settings)
     timeline = dd.focus_timeline(features, settings, season)
     if timeline.empty:
-        st.info(f"{name} no tiene partidos en {season}.")
+        st.info(f"{name} aún no ha jugado ningún partido en {season}.")
         return
+
+    # Recorrido de lo ya jugado: con la temporada arrancada esto es lo primero
+    # que se quiere ver (en agosto son 3 jornadas, no 38).
+    st.subheader(f"Recorrido en {season}")
+    cols = st.columns(4)
+    cols[0].metric("Jugados", len(timeline))
+    cols[1].metric("Puntos", int(timeline["puntos"].sum()))
+    cols[2].metric(
+        "Goles (F–C)",
+        f"{int(timeline['goles_favor'].sum())}–{int(timeline['goles_contra'].sum())}",
+    )
+    cols[3].metric(
+        "xG (F–C)", f"{timeline['xg_favor'].sum():.1f}–{timeline['xg_contra'].sum():.1f}"
+    )
+    st.markdown(" ".join(_RESULT_CHIP[r] for r in timeline["resultado"]), unsafe_allow_html=True)
+    st.dataframe(
+        timeline.assign(
+            Jornada=timeline["matchday"],
+            Rival=timeline["rival"],
+            Dónde=np.where(timeline["local"], "Casa", "Fuera"),
+            Marcador=[
+                f"{int(f)}–{int(c)}"
+                for f, c in zip(timeline["goles_favor"], timeline["goles_contra"], strict=True)
+            ],
+        )[["Jornada", "Rival", "Dónde", "Marcador", "resultado", "puntos_acumulados"]].rename(
+            columns={"resultado": "R", "puntos_acumulados": "Pts acum."}
+        ),
+        hide_index=True,
+        width="stretch",
+    )
 
     st.subheader("Elo por jornada")
     st.plotly_chart(

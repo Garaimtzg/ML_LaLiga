@@ -28,7 +28,7 @@ import pandas as pd
 from alaves_predictor.config import Settings
 from alaves_predictor.evaluation import metrics
 from alaves_predictor.evaluation.baselines import BaselineResult
-from alaves_predictor.features.build import feature_columns
+from alaves_predictor.features.build import feature_columns, in_progress_seasons
 from alaves_predictor.models import calibration, dixon_coles, ensemble, gbm_classifier, linear
 from alaves_predictor.models.gbm_classifier import VARIANT_WITH_ODDS, VARIANTS
 from alaves_predictor.models.train import (
@@ -82,7 +82,11 @@ def run_backtest(
     finished = features[features["result"].notna()].copy()
     finished = finished.sort_values(["date", "match_id"])
     seasons = sorted(set(finished["season"]))
-    test_seasons = seasons[-n_test_seasons:]
+    # Una temporada empezada pero sin terminar entrena, pero no se testea: sus
+    # 30 partidos darían una métrica ruidosa y ensuciarían las medias con las
+    # que se comprueban los criterios de aceptación de SPEC §12.1 (ADR-027).
+    partial = in_progress_seasons(features, settings)
+    test_seasons = [s for s in seasons if s not in partial][-n_test_seasons:]
     all_cols = feature_columns(finished)
     step = settings.models.ensemble.weight_grid_step
 

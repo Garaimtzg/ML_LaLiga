@@ -157,14 +157,17 @@ def matchday_predictions(
 
 
 def focus_timeline(features: pd.DataFrame, settings: Settings, season: str) -> pd.DataFrame:
-    """Serie por jornada del equipo foco: Elo, xG a favor/en contra y forma.
+    """Serie por jornada del equipo foco: resultado, Elo, xG a favor/en contra y forma.
 
     Extrae, de cada partido del equipo, los valores que le corresponden según
-    juegue de local o visitante.
+    juegue de local o visitante. Solo partidos JUGADOS: con la temporada en
+    curso el frame trae también el calendario, y dibujar el Elo o la forma de
+    partidos que no se han jugado sugiere un conocimiento que no existe.
     """
     focus = settings.focus_team
     df = features[
         (features["season"] == season)
+        & (features["result"].notna())
         & ((features["home_id"] == focus) | (features["away_id"] == focus))
     ].copy()
     if df.empty:
@@ -184,10 +187,21 @@ def focus_timeline(features: pd.DataFrame, settings: Settings, season: str) -> p
             "xg_favor": pick("home_xg", "away_xg"),
             "xg_contra": pick("away_xg", "home_xg"),
             "forma_pts_ma5": pick("home_points_ma5", "away_points_ma5"),
+            "goles_favor": pick("home_goals", "away_goals"),
+            "goles_contra": pick("away_goals", "home_goals"),
         }
     )
     out["rival"] = out["rival"].map(lambda t: team_name(settings, t))
-    return out.sort_values("matchday").reset_index(drop=True)
+    # V/E/D y puntos desde la óptica del equipo foco (no del local)
+    out["resultado"] = np.where(
+        out["goles_favor"] > out["goles_contra"],
+        "V",
+        np.where(out["goles_favor"] == out["goles_contra"], "E", "D"),
+    )
+    out["puntos"] = out["resultado"].map({"V": 3, "E": 1, "D": 0}).astype(int)
+    out = out.sort_values("matchday").reset_index(drop=True)
+    out["puntos_acumulados"] = out["puntos"].cumsum()
+    return out
 
 
 # --- Rendimiento del modelo y registro ---------------------------------------

@@ -590,8 +590,10 @@ def ingest_fixtures(
        football-data lo publique. Si el remoto falla, el local basta.
 
     Filtra la división y guarda cada encuentro no jugado con sus cuotas de
-    apertura. Nunca pisa un partido ya 'finished'. Los equipos sin alias en
-    config/teams.toml se saltan y se devuelven para avisar.
+    apertura. Nunca pisa un partido ya 'finished' y, si un mismo encuentro
+    aparece en los dos orígenes, manda el remoto (el local solo rellena lo que
+    el remoto no trae). Los equipos sin alias en config/teams.toml se saltan y
+    se devuelven para avisar.
     """
     cfg = settings.sources.football_data
     season = settings.current_season
@@ -638,6 +640,7 @@ def ingest_fixtures(
 
     inserted = 0
     unknown: set[str] = set()
+    seen: set[str] = set()
     for f in fixtures:
         if not (
             registry.knows("football_data", f.home_team)
@@ -652,6 +655,13 @@ def ingest_fixtures(
         home_id = registry.resolve("football_data", f.home_team)
         away_id = registry.resolve("football_data", f.away_team)
         match_id = make_match_id(season, home_id, away_id)
+        if match_id in seen:
+            # El remoto se parsea antes que el local y gana: el archivo local es
+            # una siembra manual para cuando football-data aún no publica el
+            # calendario, y sus fechas envejecen en cuanto sí lo publica (una
+            # fecha vieja movería el partido de jornada al agrupar, ADR-027).
+            continue
+        seen.add(match_id)
         existing = conn.execute(
             "SELECT status FROM matches WHERE match_id = ?", (match_id,)
         ).fetchone()

@@ -141,6 +141,9 @@ def test_focus_timeline(model_settings):
                 "date": "2025-08-15",
                 "home_id": "alaves",
                 "away_id": "getafe",
+                "home_goals": 2.0,
+                "away_goals": 0.0,
+                "result": "H",
                 "elo_clubelo_home": 1650.0,
                 "elo_clubelo_away": 1600.0,
                 "home_xg": 1.8,
@@ -154,6 +157,9 @@ def test_focus_timeline(model_settings):
                 "date": "2025-08-22",
                 "home_id": "barcelona",
                 "away_id": "alaves",
+                "home_goals": 1.0,
+                "away_goals": 1.0,
+                "result": "D",
                 "elo_clubelo_home": 1720.0,
                 "elo_clubelo_away": 1655.0,
                 "home_xg": 1.2,
@@ -172,6 +178,9 @@ def test_focus_timeline(model_settings):
     assert tl.iloc[1]["elo"] == 1655.0
     assert tl.iloc[1]["xg_favor"] == 1.5 and tl.iloc[1]["xg_contra"] == 1.2
     assert tl.iloc[1]["rival"] == "FC Barcelona"
+    # resultado y puntos, desde la óptica del Alavés: gana la J1, empata la J2
+    assert list(tl["resultado"]) == ["V", "E"]
+    assert list(tl["puntos_acumulados"]) == [3, 4]
 
 
 def test_registry_y_prediction_log(bundle, model_settings, mini_db):
