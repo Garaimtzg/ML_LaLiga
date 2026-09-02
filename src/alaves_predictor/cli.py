@@ -39,7 +39,12 @@ def ingest(
     matchday: bool = typer.Option(
         False, "--matchday", help="Ciclo post-jornada de la temporada en curso (F7)."
     ),
-    force: bool = typer.Option(False, "--force", help="Re-descarga aunque exista cache local."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Re-descarga aunque exista cache local (solo afecta a --historical; "
+        "el ciclo post-jornada re-descarga siempre).",
+    ),
 ) -> None:
     """Ingesta de datos: histórica (--historical) o post-jornada (--matchday, F7).
 
@@ -47,7 +52,7 @@ def ingest(
     (los nuevos resultados y el calendario) de una vez.
     """
     if matchday:
-        _run_matchday_cycle(force=force)
+        _run_matchday_cycle()
         return
     if not historical:
         typer.secho("Indica --historical o --matchday.", err=True)
@@ -85,7 +90,7 @@ def ingest(
     typer.echo("Ejecuta `alaves validate` para certificar la BD.")
 
 
-def _run_matchday_cycle(*, force: bool) -> None:
+def _run_matchday_cycle() -> None:
     """Ciclo post-jornada de SPEC §3.3: ingesta → evalúa → reentrena → predice → simula.
 
     Cada paso es robusto: si falta el prerrequisito (sin resultados nuevos, sin
@@ -102,7 +107,10 @@ def _run_matchday_cycle(*, force: bool) -> None:
         # 1-3. Ingesta de la temporada en curso (resultados, xG, calendario, Elo)
         typer.echo("Ingiriendo la temporada en curso (resultados, xG, calendario, Elo)...")
         try:
-            report = ingest_matchday(conn, settings, force=force)
+            # Siempre re-descarga: los archivos de la temporada en curso
+            # (resultados, calendario, Elo) cambian cada semana, así que leer la
+            # cache dejaría el ciclo congelado en la jornada anterior.
+            report = ingest_matchday(conn, settings, force=True)
         except ETLError as exc:
             typer.secho(f"ERROR de ingesta: {exc}", fg=typer.colors.RED, err=True)
             raise typer.Exit(code=1) from exc

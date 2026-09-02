@@ -62,6 +62,27 @@ ha dejado de ingerir, y no devolver nunca un calendario vacío sin motivo.
   problema y no se avisa).
 - **`config/teams.toml` incorpora al Málaga CF**, ascendido a la 2026-27.
 
+## Añadido tras la segunda ejecución real
+
+La pasada siguiente ingirió las 3 jornadas, y destapó tres cosas más:
+
+- **El ciclo semanal leía la cache.** `ingest_matchday` documenta `force=True`
+  precisamente porque los archivos de la temporada en curso crecen cada jornada,
+  pero el CLI le pasaba el flag `--force` (False por defecto), anulándolo. La
+  semana siguiente habría releído el CSV cacheado y no habría visto nunca la
+  jornada 4. El ciclo post-jornada **re-descarga siempre**; `--force` queda solo
+  para `--historical`.
+- **El aviso del calendario estaba mal condicionado.** Se avisaba según lo
+  insertado en esa pasada, y no salía si todos los encuentros del fixtures.csv
+  ya constaban jugados. Lo que importa es el **estado**: si la BD no tiene
+  ningún partido `scheduled` de la temporada, no hay nada que predecir ni
+  simular, y eso se dice siempre — con el motivo y con la ruta del archivo local
+  donde sembrar el calendario oficial.
+- **El aviso de ClubElo mentía para un ascendido.** Decía "conservan el Elo en
+  BD" también para un equipo que no tiene ninguno (Málaga, recién dado de alta):
+  ahí las features de Elo van vacías y el alias hay que revisarlo. Ahora se
+  distingue "no se ha podido refrescar" de "no tiene ningún Elo".
+
 ## Consecuencias
 
 - Un ascenso múltiple se resuelve en una sola pasada: la ingesta dice de una vez

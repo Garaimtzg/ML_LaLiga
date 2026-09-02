@@ -601,11 +601,6 @@ class FixturesReport:
     # Motivos por los que un origen no aportó nada (descarga o formato).
     problems: list[str] = field(default_factory=list)
 
-    @property
-    def found_nothing(self) -> bool:
-        """No hay calendario del que tirar (distinto de 'ya está todo jugado')."""
-        return self.inserted == 0 and self.skipped_finished == 0
-
     def explain_empty(self) -> str:
         """Por qué no hay calendario, en una frase para el aviso del CLI."""
         if self.problems:
@@ -841,22 +836,42 @@ def ingest_matchday(
                 "Equipos del calendario sin alias en config/teams.toml: "
                 f"{', '.join(fixtures.unknown_teams)}."
             )
-        if fixtures.found_nothing:
-            # Sin calendario no hay próxima jornada que predecir: decir por qué,
-            # nunca despachar un 0 en silencio. (Que no entre nada porque los
-            # encuentros ya están jugados no es un problema: no se avisa.)
+        # Lo que importa no es cuántos entraron en ESTA pasada, sino si la BD
+        # tiene partidos por jugar: sin ellos no hay próxima jornada que
+        # predecir ni clasificación que proyectar. Es un chequeo de estado.
+        pending = conn.execute(
+            "SELECT COUNT(*) AS n FROM matches WHERE season = ? AND status = 'scheduled'",
+            (season,),
+        ).fetchone()["n"]
+        if not pending:
             report.warnings.append(
-                f"El calendario no aportó ningún partido nuevo: {fixtures.explain_empty()}."
+                "La BD no tiene NINGÚN partido por jugar de la temporada, así que no "
+                f"hay nada que predecir ni simular. Motivo: {fixtures.explain_empty()}. "
+                f"El fixtures.csv de football-data solo lista los encuentros inminentes; "
+                f"para tener la temporada entera, siembra el calendario oficial en "
+                f"'{Path(settings.sources.football_data.local_fixtures_file)}' "
+                "(formato football-data: Div,Date,Time,HomeTeam,AwayTeam)."
             )
     except ETLError as exc:
         report.warnings.append(f"No se pudo obtener el calendario de próximos partidos: {exc}")
 
     # 4. Elo reciente de ClubElo (force: queremos el rating más actual).
-    _, elo_unavailable = ingest_clubelo(conn, settings, registry, force=force)
+    elo_rows, elo_unavailable = ingest_clubelo(conn, settings, registry, force=force)
     if elo_unavailable:
-        report.warnings.append(
-            f"ClubElo no responde para: {', '.join(elo_unavailable)} (conservan el Elo en BD)."
-        )
+        # Distinguir "no se ha podido refrescar" de "no tiene ningún Elo": lo
+        # segundo sí afecta a las predicciones de ese equipo (un ascendido
+        # recién dado de alta), y decir "conserva el Elo en BD" sería falso.
+        sin_datos = [t for t in elo_unavailable if not elo_rows.get(t)]
+        detail = f"ClubElo no responde para: {', '.join(elo_unavailable)}."
+        if sin_datos:
+            detail += (
+                f" ATENCIÓN: {', '.join(sin_datos)} no tiene(n) NINGÚN Elo en la BD; sus "
+                "features de Elo van vacías. Revisa su alias 'clubelo' en config/teams.toml "
+                "(es el componente de la URL de api.clubelo.com)."
+            )
+        else:
+            detail += " (Todos conservan su Elo ya almacenado en la BD.)"
+        report.warnings.append(detail)
     return report
 
 

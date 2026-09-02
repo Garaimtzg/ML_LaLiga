@@ -55,7 +55,7 @@ cd ~ && mkdir -p proyectos && cd proyectos
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (167 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (168 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
@@ -376,7 +376,7 @@ uv run streamlit run app/dashboard.py
 │           ├── understat.py          # xG de relleno vía API interna (ADR-011)
 │           └── clubelo.py
 ├── app/dashboard.py                  # dashboard Streamlit (solo presentación)
-└── tests/                            # 167 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 168 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)

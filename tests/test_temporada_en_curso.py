@@ -386,3 +386,37 @@ def test_un_calendario_vacio_explica_por_que(mini_db, mini_settings, tmp_path, m
     assert fixtures.inserted == 0
     assert fixtures.by_source == {"remoto": 0, "local": 0}
     assert "SP1" in fixtures.explain_empty()
+
+
+def test_el_ciclo_semanal_siempre_redescarga(monkeypatch, tmp_path):
+    """El CSV de la temporada en curso crece cada jornada: leer la cache lo congela.
+
+    `ingest_matchday` documenta force=True, pero el CLI le pasaba el flag
+    `--force` (False por defecto), así que el ciclo semanal habría releído la
+    cache y no habría visto nunca la jornada siguiente.
+    """
+    from alaves_predictor import cli
+
+    llamadas: list[bool] = []
+
+    def _fake_ingest(conn, settings, *, force):
+        llamadas.append(force)
+        raise SystemExit(0)  # corta el ciclo: solo interesa con qué se llamó
+
+    monkeypatch.setattr("alaves_predictor.etl.ingest.ingest_matchday", _fake_ingest)
+    monkeypatch.setattr(cli, "_load_settings", lambda: _settings_en_tmp(tmp_path))
+    with pytest.raises(SystemExit):
+        cli._run_matchday_cycle()
+    assert llamadas == [True]
+
+
+def _settings_en_tmp(tmp_path):
+    """Settings reales con la BD en tmp, para no tocar data/alaves.db."""
+    from pathlib import Path
+
+    from alaves_predictor.config import load_settings
+
+    settings = load_settings(Path("config"))
+    settings.data.db_path = tmp_path / "test.db"
+    settings.data.raw_dir = tmp_path / "raw"
+    return settings
