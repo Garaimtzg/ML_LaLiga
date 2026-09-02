@@ -480,7 +480,7 @@ def test_el_calendario_sale_de_fbref_con_jornada_oficial(
     assert rows[f"{season}_alaves_real-sociedad"] == 8
 
     # y la deducción por fechas no las pisa
-    assign_scheduled_matchdays(mini_db, season)
+    assign_scheduled_matchdays(mini_db, season, mini_settings.league.matches_per_round)
     rows_despues = dict(
         mini_db.execute(
             "SELECT match_id, matchday FROM matches WHERE status = 'scheduled'"
@@ -550,3 +550,77 @@ def test_fbref_usa_la_url_sin_ano_para_la_temporada_en_curso():
     # una temporada cerrada solo prueba la versionada
     pasadas = _fbref_schedule_urls("2024-25", settings)
     assert len(pasadas) == 1 and "2024-2025" in pasadas[0]
+
+
+def test_las_jornadas_deducidas_tienen_el_tamano_correcto(mini_db, mini_settings):
+    """Regresión: una jornada entre semana fusionaba dos y salían 11 partidos.
+
+    La deducción por saltos de fecha no distingue "sábado -> martes de la
+    jornada siguiente" de "sábado -> lunes de la misma jornada". Agrupando por
+    número de encuentros (n/2) el problema desaparece (ADR-029).
+    """
+    from alaves_predictor.etl.ingest import assign_scheduled_matchdays
+
+    mini_settings.league.teams_per_season = 4  # 2 partidos por jornada
+    TeamRegistry(mini_settings.teams).seed_db(mini_db)
+    season = mini_settings.current_season
+    now = datetime.now(UTC).isoformat()
+    equipos = list(mini_settings.teams)
+    # J1 sábado/domingo y J2 martes/miércoles: solo 2 días de separación entre
+    # jornadas, menos que el salto interno de otras jornadas.
+    calendario = [
+        ("2026-09-12", equipos[0], equipos[1]),
+        ("2026-09-13", equipos[2], equipos[3]),
+        ("2026-09-15", equipos[1], equipos[0]),
+        ("2026-09-16", equipos[3], equipos[2]),
+    ]
+    for fecha, home, away in calendario:
+        db.upsert(
+            mini_db,
+            "matches",
+            {
+                "match_id": f"{season}_{home}_{away}",
+                "season": season,
+                "matchday": None,
+                "date": fecha,
+                "home_id": home,
+                "away_id": away,
+                "home_goals": None,
+                "away_goals": None,
+                "status": "scheduled",
+                "source": "test",
+                "fetched_at": now,
+            },
+            key_cols=["match_id"],
+        )
+    mini_db.commit()
+
+    assign_scheduled_matchdays(mini_db, season, mini_settings.league.matches_per_round)
+    por_jornada = dict(
+        mini_db.execute(
+            "SELECT matchday, COUNT(*) n FROM matches WHERE season = ? AND status = 'scheduled' "
+            "GROUP BY matchday ORDER BY matchday",
+            (season,),
+        ).fetchall()
+    )
+    assert por_jornada == {1: 2, 2: 2}  # nunca una jornada de 3 y otra de 1
+
+
+def test_el_error_de_fbref_dice_que_urls_probo(mini_settings, tmp_path, monkeypatch):
+    """ "Sigue sin ir" no es diagnosticable si el mensaje solo nombra una URL."""
+    from alaves_predictor.etl.errors import SourceDownloadError
+    from alaves_predictor.etl.ingest import _fetch_fbref_schedule
+
+    mini_settings.data.raw_dir = tmp_path / "raw"
+
+    def _boom(url, cache_path, **kwargs):
+        raise SourceDownloadError(f"HTTP 404 al descargar {url}")
+
+    monkeypatch.setattr("alaves_predictor.etl.ingest.fetch_text", _boom)
+    with pytest.raises(SourceDownloadError) as exc:
+        _fetch_fbref_schedule(mini_settings.current_season, mini_settings)
+
+    mensaje = str(exc.value)
+    assert "/comps/12/schedule/" in mensaje  # la URL sin año, la que se prueba primero
+    assert "2019-2020" in mensaje  # y la versionada
+    assert "Wayback" in mensaje

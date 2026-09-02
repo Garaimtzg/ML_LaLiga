@@ -37,6 +37,11 @@ class LeagueConfig(BaseModel):
         """Partidos totales: n·(n−1) (cada par se enfrenta ida y vuelta)."""
         return self.teams_per_season * (self.teams_per_season - 1)
 
+    @property
+    def matches_per_round(self) -> int:
+        """Partidos de una jornada: todos los equipos juegan, n/2 encuentros."""
+        return self.teams_per_season // 2
+
 
 class DataConfig(BaseModel):
     db_path: Path

@@ -74,25 +74,32 @@ def assign_matchdays(conn: sqlite3.Connection, season: str) -> None:
         )
 
 
-def assign_scheduled_matchdays(conn: sqlite3.Connection, season: str, gap_days: int = 3) -> None:
-    """Asigna jornada a los partidos PROGRAMADOS agrupando por fechas cercanas (F7).
+def assign_scheduled_matchdays(
+    conn: sqlite3.Connection, season: str, matches_per_round: int
+) -> None:
+    """Deduce la jornada de los partidos PROGRAMADOS que no la traen (F7).
 
-    Es una DEDUCCIÓN, y solo se usa cuando no hay más remedio: si el calendario
-    vino de FBref, cada partido ya trae su jornada oficial (Wk) y esta función
-    no toca nada (ADR-029). La deducción falla justo donde más duele —jornadas
-    entre semana, partidos aplazados—, así que el dato oficial siempre gana.
+    Solo se usa cuando no hay más remedio: si el calendario vino de FBref, cada
+    partido ya trae su jornada oficial (Wk) y esta función no toca nada
+    (ADR-029).
 
-    Cuando hay que deducir: se ordenan los programados por fecha y un salto de
-    más de `gap_days` días abre jornada nueva (una jornada de LaLiga ocupa
-    ~viernes-lunes), continuando desde la última jugada. No toca los partidos
-    jugados (esos conservan la jornada oficial de FBref).
+    La deducción agrupa los programados por ORDEN DE FECHA en bloques del tamaño
+    de una jornada (n/2 encuentros). Antes se abría jornada nueva cuando la
+    fecha daba un salto de más de N días, y eso se rompía con las jornadas entre
+    semana: el salto de un sábado al martes siguiente es el mismo que el de un
+    viernes al lunes de la MISMA jornada, así que las fusionaba y salían
+    jornadas de 11 partidos. Contar encuentros no tiene ese problema.
+
+    Limitación conocida: si falta algún partido programado (uno aplazado sin
+    fecha, o un calendario a medias), los bloques se desplazan. Por eso la
+    jornada oficial de FBref siempre manda sobre esta deducción.
     """
-    pending = conn.execute(
-        "SELECT COUNT(*) AS n FROM matches WHERE season = ? AND status = 'scheduled' "
-        "AND matchday IS NULL",
+    rows = conn.execute(
+        "SELECT match_id, matchday FROM matches WHERE season = ? AND status = 'scheduled' "
+        "ORDER BY date, match_id",
         (season,),
-    ).fetchone()["n"]
-    if not pending:
+    ).fetchall()
+    if all(row["matchday"] is not None for row in rows):
         return  # todos traen jornada oficial: nada que deducir
 
     max_finished = (
@@ -102,21 +109,16 @@ def assign_scheduled_matchdays(conn: sqlite3.Connection, season: str, gap_days: 
         ).fetchone()["m"]
         or 0
     )
-    rows = conn.execute(
-        "SELECT match_id, date FROM matches WHERE season = ? AND status = 'scheduled' "
-        "ORDER BY date, match_id",
-        (season,),
-    ).fetchall()
     matchday = max_finished + 1
-    prev: date | None = None
+    in_round = 0
     for row in rows:
-        current = date.fromisoformat(row["date"])
-        if prev is not None and (current - prev).days > gap_days:
+        if in_round == matches_per_round:
             matchday += 1
+            in_round = 0
         conn.execute(
             "UPDATE matches SET matchday = ? WHERE match_id = ?", (matchday, row["match_id"])
         )
-        prev = current
+        in_round += 1
     conn.commit()
 
 
@@ -320,7 +322,6 @@ def _fetch_fbref_schedule(
     Si todo falla, el error incluye cómo guardar el snapshot a mano en la cache.
     """
     cfg = settings.sources.fbref
-    url = fbref.schedule_url(season, cfg)
     cache = _fbref_schedule_cache(season, settings)
 
     # 1. Cache local
@@ -333,7 +334,10 @@ def _fetch_fbref_schedule(
     # 2. FBref directo (fuente primaria; imprescindible en F7 para la temporada
     #    en curso). Para la temporada vigente se prueba PRIMERO la URL sin año:
     #    FBref solo versiona las temporadas cerradas, y la versionada da 404
-    #    mientras la temporada está en marcha (ADR-029).
+    #    mientras la temporada está en marcha (ADR-029). Se anota qué falló en
+    #    cada intento: si no, el mensaje final solo nombra una URL y no se sabe
+    #    si la otra llegó a probarse.
+    attempts: list[str] = []
     for candidate in _fbref_schedule_urls(season, settings):
         try:
             text = fetch_text(
@@ -344,8 +348,8 @@ def _fetch_fbref_schedule(
                 impersonate=True,
             )
             return fbref.parse_schedule(text), fbref.SOURCE_NAME
-        except (SourceDownloadError, SourceFormatError):
-            continue  # bloqueado o página sin datos: siguiente candidato
+        except (SourceDownloadError, SourceFormatError) as exc:
+            attempts.append(f"  - {candidate}\n      -> {exc}")
 
     # 3. Wayback Machine: candidatos del índice CDX, más recientes primero
     try:
@@ -384,11 +388,15 @@ def _fetch_fbref_schedule(
         # Ningún snapshot trae xG (FBref lo quitó del calendario en 2026):
         # se acepta el mejor por la jornada oficial; el xG lo pone Understat.
         return best_without_xg, f"{fbref.SOURCE_NAME}-wayback"
+    attempts.append(
+        f"  - Wayback Machine (snapshots probados: {len(candidates[:8])})\n      -> {last_error}"
+    )
+    manual = _fbref_schedule_urls(season, settings)[0]
     raise SourceDownloadError(
-        f"No se pudo obtener el calendario de FBref de {season} ni directo ni vía "
-        f"Wayback Machine (último error: {last_error}). Alternativa manual: abre {url} "
-        f"en tu navegador, guarda la página como HTML (Ctrl+S, 'solo HTML') en '{cache}' "
-        "y relanza la ingesta: la leerá de la cache."
+        f"No se pudo obtener el calendario de FBref de {season}. Intentos:\n"
+        + "\n".join(attempts)
+        + f"\n  Alternativa manual: abre {manual} en tu navegador, guarda la página como "
+        f"HTML (Ctrl+S, 'solo HTML') en '{cache}' y relanza la ingesta: la leerá de la cache."
     )
 
 
@@ -958,7 +966,7 @@ def ingest_matchday(
     try:
         fixtures = ingest_fixtures(conn, settings, registry, force=force)
         report.scheduled = fixtures.inserted
-        assign_scheduled_matchdays(conn, season)
+        assign_scheduled_matchdays(conn, season, settings.league.matches_per_round)
         if fixtures.unknown_teams:
             report.warnings.append(
                 "Equipos del calendario sin alias en config/teams.toml: "

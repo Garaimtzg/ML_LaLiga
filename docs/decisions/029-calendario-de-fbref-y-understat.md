@@ -78,6 +78,29 @@ Piezas nuevas:
   de fechas falla justo donde más duele (jornadas entre semana, aplazamientos),
   así que el dato oficial siempre gana.
 
+## Añadido tras la primera ejecución con calendario
+
+Con los 350 partidos ya en la BD, la primera jornada proyectada salió con **11
+encuentros**. Una jornada de LaLiga tiene 10: la deducción por saltos de fecha
+estaba fusionando dos jornadas.
+
+La causa es que ese criterio no puede funcionar: el salto de un sábado al martes
+siguiente (dos jornadas distintas, con una entre semana de por medio) es el
+mismo que el de un viernes al lunes de la **misma** jornada. Con `gap_days=3`
+cualquiera de los dos casos cae del mismo lado.
+
+`assign_scheduled_matchdays` pasa a agrupar por **número de encuentros**: los
+programados, en orden de fecha, se reparten en bloques de n/2 (10 en LaLiga,
+`league.matches_per_round`, parametrizado). No hay umbral que ajustar y el
+tamaño de jornada sale siempre exacto. Queda una limitación: si falta algún
+partido programado los bloques se desplazan — otra razón para preferir la Wk
+oficial de FBref, que es lo que esta función evita tener que deducir.
+
+También se cambió el error de FBref para que **liste todos los intentos** (URL
+sin año, URL versionada y Wayback) con lo que devolvió cada uno. Antes nombraba
+solo la versionada, así que ante un fallo no había forma de saber si la otra
+llegó a probarse.
+
 ## Consecuencias
 
 - El calendario se obtiene solo. `data/fixtures.csv` queda como red de

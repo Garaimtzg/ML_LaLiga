@@ -228,7 +228,7 @@ def test_assign_scheduled_matchdays_agrupa_por_fechas(mini_db, mini_settings):
             key_cols=["match_id"],
         )
     mini_db.commit()
-    assign_scheduled_matchdays(mini_db, season)
+    assign_scheduled_matchdays(mini_db, season, mini_settings.league.matches_per_round)
     md = {
         r["match_id"]: r["matchday"]
         for r in mini_db.execute("SELECT match_id, matchday FROM matches").fetchall()
