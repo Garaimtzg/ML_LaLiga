@@ -101,6 +101,34 @@ sin año, URL versionada y Wayback) con lo que devolvió cada uno. Antes nombrab
 solo la versionada, así que ante un fallo no había forma de saber si la otra
 llegó a probarse.
 
+## FBref pasa a ser opcional (no se elimina)
+
+Tras varias semanas con FBref inalcanzable, la pregunta natural es si quitarlo.
+La respuesta es no, pero sí dejar de tratarlo como imprescindible.
+
+**Por qué no se elimina.** FBref es la fuente de la **jornada oficial de los
+3.040 partidos históricos** ya cargados, y de buena parte de su xG (directo o
+vía Wayback, ADR-008/010). "No se usa" solo es cierto para la temporada en
+curso; para el histórico se usa entero. Eliminarlo significaría que una
+reconstrucción de la BD desde cero perdería la Wk oficial de ocho temporadas y
+dejaría a **Understat como única fuente de xG** — precisamente la fuente que ya
+se rompió una vez (rediseño de dic-2025) y obligó a rehacer el adaptador
+(ADR-011). Cambiar dos fuentes por una es perder redundancia justo donde el
+proyecto ya se quemó.
+
+**Qué se cambia.** El aviso deja de dispararse por que FBref haya fallado y
+pasa a dispararse por lo que ese fallo haya **costado**, igual que se hizo con
+el calendario:
+
+- si el xG está cubierto y todos los partidos tienen jornada, es una **nota**
+  informativa (gris, una línea): FBref no hizo falta;
+- si queda xG sin cubrir o partidos sin jornada, entonces sí es un **aviso**
+  con el detalle completo de los intentos.
+
+`MatchdayReport` gana `notes` junto a `warnings` para poder distinguirlo. La
+regla general: un aviso es algo que el usuario debería mirar; si no hay nada
+que mirar, no es un aviso.
+
 ## Consecuencias
 
 - El calendario se obtiene solo. `data/fixtures.csv` queda como red de

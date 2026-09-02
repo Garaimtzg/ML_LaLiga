@@ -624,3 +624,57 @@ def test_el_error_de_fbref_dice_que_urls_probo(mini_settings, tmp_path, monkeypa
     assert "/comps/12/schedule/" in mensaje  # la URL sin año, la que se prueba primero
     assert "2019-2020" in mensaje  # y la versionada
     assert "Wayback" in mensaje
+
+
+def test_fbref_caido_es_nota_si_no_cuesta_nada(mini_db, mini_settings, monkeypatch, tmp_path):
+    """FBref es opcional en la temporada en curso: si Understat cubre el xG, no es un aviso."""
+    from alaves_predictor.etl.errors import SourceDownloadError
+    from alaves_predictor.etl.ingest import ingest_matchday
+
+    _sin_calendario_local(mini_settings, tmp_path)
+    fixtures_dir = Path(__file__).parent / "fixtures"
+
+    def _fetch(url, cache_path, **kwargs):
+        if "fbref.test" in url or "web.archive.org" in url:
+            raise SourceDownloadError("FBref bloquea la petición")
+        if "fd.test" in url:
+            return (fixtures_dir / "football_data_mini.csv").read_text()
+        if "us.test" in url:
+            return (fixtures_dir / "understat_league_mini.json").read_text()
+        if "elo.test" in url:
+            club = url.rsplit("/", 1)[-1]
+            return (fixtures_dir / f"clubelo_{club}.csv").read_text()
+        raise SourceDownloadError(f"no simulado: {url}")
+
+    monkeypatch.setattr("alaves_predictor.etl.ingest.fetch_text", _fetch)
+    report = ingest_matchday(mini_db, mini_settings)
+
+    assert report.finished == 12
+    assert report.xg_coverage == 12  # Understat lo cubrió todo
+    fbref_avisos = [w for w in report.warnings if "FBref" in w]
+    fbref_notas = [n for n in report.notes if "FBref" in n]
+    assert not fbref_avisos, fbref_avisos  # no molesta cada semana
+    assert len(fbref_notas) == 1 and "no ha hecho falta" in fbref_notas[0]
+
+
+def test_fbref_caido_es_aviso_si_deja_un_hueco(mini_db, mini_settings, monkeypatch, tmp_path):
+    """Si además falla Understat, el xG se queda sin cubrir: eso sí es un aviso."""
+    from alaves_predictor.etl.errors import SourceDownloadError
+    from alaves_predictor.etl.ingest import ingest_matchday
+
+    _sin_calendario_local(mini_settings, tmp_path)
+    fixtures_dir = Path(__file__).parent / "fixtures"
+
+    def _fetch(url, cache_path, **kwargs):
+        if "fd.test" in url:
+            return (fixtures_dir / "football_data_mini.csv").read_text()
+        if "elo.test" in url:
+            club = url.rsplit("/", 1)[-1]
+            return (fixtures_dir / f"clubelo_{club}.csv").read_text()
+        raise SourceDownloadError("fuente de xG no disponible")
+
+    monkeypatch.setattr("alaves_predictor.etl.ingest.fetch_text", _fetch)
+    report = ingest_matchday(mini_db, mini_settings)
+
+    assert report.xg_coverage < report.finished
+    assert any("FBref" in w and "SÍ hace falta" in w for w in report.warnings)

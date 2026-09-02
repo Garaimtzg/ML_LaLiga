@@ -119,6 +119,10 @@ def _run_matchday_cycle() -> None:
             f"{report.scheduled} programados.",
             fg=typer.colors.GREEN,
         )
+        for note in report.notes:
+            # Notas: pasó algo, pero no costó nada. En gris para que no compita
+            # con los avisos, que son lo que sí hay que mirar.
+            typer.secho(f"  · {note}", fg=typer.colors.BRIGHT_BLACK)
         for warning in report.warnings:
             typer.secho(f"  AVISO: {warning}", fg=typer.colors.YELLOW)
 

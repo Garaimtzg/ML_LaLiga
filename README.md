@@ -55,7 +55,7 @@ cd ~ && mkdir -p proyectos && cd proyectos
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (174 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (176 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
@@ -114,7 +114,7 @@ uv run mypy src                        # tipos (modo básico)
 | Fuente | Aporta | Tablas |
 |--------|--------|--------|
 | [football-data.co.uk](https://www.football-data.co.uk/spainm.php) | Resultados, tiros/córners/faltas/tarjetas y **cuotas** (bet365, Pinnacle, máx./media de mercado; apertura y cierre) | `matches`, `match_stats`, `odds` |
-| [FBref](https://fbref.com/en/comps/12/) | **xG** histórico + **jornada oficial** (Wk), de partidos jugados y por jugar | `match_stats.xg`, `matches.matchday` |
+| [FBref](https://fbref.com/en/comps/12/) | **xG** histórico + **jornada oficial** (Wk), de partidos jugados y por jugar. *Opcional en la temporada en curso*: si no responde, Understat cubre el xG y la jornada se deduce (ADR-029) | `match_stats.xg`, `matches.matchday` |
 | [Understat](https://understat.com) | **xG de relleno** vía su API interna `getLeagueData` (donde FBref no lo aporta) y el **calendario completo** de la temporada (ADR-029) | `match_stats.xg`, `matches` |
 | [ClubElo](http://clubelo.com) | Rating **Elo** histórico por club | `elo` |
 
@@ -391,7 +391,7 @@ uv run streamlit run app/dashboard.py
 │           ├── understat.py          # xG de relleno vía API interna (ADR-011)
 │           └── clubelo.py
 ├── app/dashboard.py                  # dashboard Streamlit (solo presentación)
-└── tests/                            # 174 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 176 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)

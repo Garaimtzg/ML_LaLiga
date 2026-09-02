@@ -909,7 +909,10 @@ class MatchdayReport:
     finished: int = 0
     scheduled: int = 0
     xg_coverage: int = 0
+    # Avisos: algo que el usuario debería mirar. Notas: algo que pasó pero no
+    # costó nada (una fuente opcional caída cuyo dato cubrió otra).
     warnings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 def ingest_matchday(
@@ -918,9 +921,14 @@ def ingest_matchday(
     """Ingesta de la temporada en curso: resultados nuevos, xG, calendario y Elo (F7).
 
     Refresca todo lo temporal de la temporada actual. Cada fuente que falle
-    degrada con aviso (la BD manda, la red es el medio); nunca aborta el ciclo
-    entero por una fuente caída. `force=True` por defecto: los archivos de la
-    temporada en curso se actualizan cada semana.
+    degrada (la BD manda, la red es el medio); nunca aborta el ciclo entero por
+    una fuente caída. `force=True` por defecto: los archivos de la temporada en
+    curso se actualizan cada semana.
+
+    Que una fuente falle se avisa según lo que CUESTE, no según que haya
+    fallado: FBref es opcional en la temporada en curso —su xG lo cubre
+    Understat y su jornada oficial se puede deducir—, así que si no aporta nada
+    que falte, es una nota, no un aviso (ADR-029).
     """
     registry = TeamRegistry(settings.teams)
     db.init_schema(conn)
@@ -946,18 +954,19 @@ def ingest_matchday(
         )
 
     # 2. xG: FBref directo (o Wayback) y relleno con Understat (ADR-008/011).
+    fbref_error: str | None = None
     if report.finished:
         try:
             _, via = ingest_fbref_season(conn, season, settings, registry, force=force)
             if via != fbref.SOURCE_NAME:
-                report.warnings.append(f"{season}: xG/calendario de FBref vía Wayback Machine.")
+                report.notes.append(f"{season}: xG/calendario de FBref vía Wayback Machine.")
         except ETLError as exc:
-            report.warnings.append(f"FBref no disponible para {season}: {exc}")
+            fbref_error = str(exc)  # se juzga al final, según lo que haya costado
         if _xg_coverage(conn, season) < report.finished:
             try:
                 filled = ingest_understat_xg(conn, season, settings, registry, force=force)
                 if filled:
-                    report.warnings.append(f"{season}: xG de {filled} partidos vía Understat.")
+                    report.notes.append(f"{season}: xG de {filled} partidos vía Understat.")
             except ETLError as exc:
                 report.warnings.append(f"Understat no disponible para {season}: {exc}")
     report.xg_coverage = _xg_coverage(conn, season)
@@ -990,6 +999,26 @@ def ingest_matchday(
             )
     except ETLError as exc:
         report.warnings.append(f"No se pudo obtener el calendario de próximos partidos: {exc}")
+
+    # FBref es opcional: se juzga aquí, cuando ya se sabe si lo suyo (xG y
+    # jornada oficial) lo ha puesto otra fuente o se ha quedado sin poner.
+    if fbref_error is not None:
+        sin_jornada = conn.execute(
+            "SELECT COUNT(*) AS n FROM matches WHERE season = ? AND matchday IS NULL",
+            (season,),
+        ).fetchone()["n"]
+        if report.xg_coverage >= report.finished and not sin_jornada:
+            report.notes.append(
+                f"FBref no responde para {season} y no ha hecho falta: el xG lo cubre "
+                "Understat y las jornadas están deducidas. Solo aporta la jornada "
+                "oficial cuando está accesible."
+            )
+        else:
+            report.warnings.append(
+                f"FBref no disponible para {season} y SÍ hace falta "
+                f"(xG {report.xg_coverage}/{report.finished}, {sin_jornada} partidos "
+                f"sin jornada): {fbref_error}"
+            )
 
     # 4. Elo reciente de ClubElo (force: queremos el rating más actual).
     elo_rows, elo_unavailable = ingest_clubelo(conn, settings, registry, force=force)
