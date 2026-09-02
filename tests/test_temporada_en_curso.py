@@ -8,6 +8,7 @@ reglas de una temporada completa. Aquí se fija ese contrato.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -21,6 +22,7 @@ from alaves_predictor.features.build import in_progress_seasons
 from alaves_predictor.models import train as train_mod
 
 CURRENT = "2021-22"  # última temporada del frame sintético
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def partial_features(synthetic_features, played_matchdays: int = 3):
@@ -384,7 +386,7 @@ def test_un_calendario_vacio_explica_por_que(mini_db, mini_settings, tmp_path, m
 
     fixtures = ingest_fixtures(mini_db, mini_settings, registry)
     assert fixtures.inserted == 0
-    assert fixtures.by_source == {"remoto": 0, "local": 0}
+    assert fixtures.by_source == {}  # ningún origen aportó un solo encuentro
     assert "SP1" in fixtures.explain_empty()
 
 
@@ -412,11 +414,139 @@ def test_el_ciclo_semanal_siempre_redescarga(monkeypatch, tmp_path):
 
 def _settings_en_tmp(tmp_path):
     """Settings reales con la BD en tmp, para no tocar data/alaves.db."""
-    from pathlib import Path
-
     from alaves_predictor.config import load_settings
 
     settings = load_settings(Path("config"))
     settings.data.db_path = tmp_path / "test.db"
     settings.data.raw_dir = tmp_path / "raw"
     return settings
+
+
+# --- Calendario: de dónde sale y quién manda en cada campo (ADR-029) ---------
+
+_FBREF_FIXTURES = (FIXTURES / "fbref_fixtures_mini.html").read_text(encoding="utf-8")
+_UNDERSTAT_FIXTURES = (FIXTURES / "understat_league_pendientes.json").read_text(encoding="utf-8")
+_FD_FIXTURES = (
+    "Div,Date,Time,HomeTeam,AwayTeam,AvgH,AvgD,AvgA\n"
+    "SP1,19/09/2026,18:30,Barcelona,Alaves,1.40,5.00,7.50\n"
+)
+
+
+def _calendar_fetch(monkeypatch, *, fbref_html="", understat_json="", fd_csv=""):
+    """Sirve a cada origen su texto; cadena vacía = origen caído."""
+    from alaves_predictor.etl.errors import SourceDownloadError
+
+    def _fetch(url, cache_path, **kwargs):
+        for marca, texto in (
+            ("fbref.test", fbref_html),
+            ("us.test", understat_json),
+            ("fixtures.csv", fd_csv),
+        ):
+            if marca in url:
+                if not texto:
+                    raise SourceDownloadError(f"{marca} no disponible")
+                return texto
+        raise SourceDownloadError(f"origen no simulado: {url}")
+
+    monkeypatch.setattr("alaves_predictor.etl.ingest.fetch_text", _fetch)
+
+
+def _sin_calendario_local(settings, tmp_path):
+    settings.sources.football_data.local_fixtures_file = str(tmp_path / "no_existe.csv")
+
+
+def test_el_calendario_sale_de_fbref_con_jornada_oficial(
+    mini_db, mini_settings, tmp_path, monkeypatch
+):
+    """FBref es el único origen con la Wk: si responde, no se deduce nada."""
+    from alaves_predictor.etl.ingest import assign_scheduled_matchdays
+
+    _sin_calendario_local(mini_settings, tmp_path)
+    _calendar_fetch(monkeypatch, fbref_html=_FBREF_FIXTURES)
+    registry = TeamRegistry(mini_settings.teams)
+    registry.seed_db(mini_db)
+
+    fixtures = ingest_fixtures(mini_db, mini_settings, registry)
+    assert fixtures.inserted == 2 and fixtures.by_source == {"fbref": 2}
+
+    # la jornada guardada es la OFICIAL (7 y 8), no un 1 y 2 deducidos
+    rows = dict(
+        mini_db.execute(
+            "SELECT match_id, matchday FROM matches WHERE status = 'scheduled'"
+        ).fetchall()
+    )
+    season = mini_settings.current_season
+    assert rows[f"{season}_barcelona_alaves"] == 7
+    assert rows[f"{season}_alaves_real-sociedad"] == 8
+
+    # y la deducción por fechas no las pisa
+    assign_scheduled_matchdays(mini_db, season)
+    rows_despues = dict(
+        mini_db.execute(
+            "SELECT match_id, matchday FROM matches WHERE status = 'scheduled'"
+        ).fetchall()
+    )
+    assert rows_despues == rows
+
+
+def test_understat_da_el_calendario_cuando_fbref_no_responde(
+    mini_db, mini_settings, tmp_path, monkeypatch
+):
+    """Understat publica la temporada entera: es la red de seguridad del calendario."""
+    _sin_calendario_local(mini_settings, tmp_path)
+    _calendar_fetch(monkeypatch, understat_json=_UNDERSTAT_FIXTURES)
+    registry = TeamRegistry(mini_settings.teams)
+    registry.seed_db(mini_db)
+
+    fixtures = ingest_fixtures(mini_db, mini_settings, registry)
+    assert fixtures.inserted == 2 and fixtures.by_source == {"understat": 2}
+    # sin jornada oficial: queda NULL y la deduce assign_scheduled_matchdays
+    nulls = mini_db.execute(
+        "SELECT COUNT(*) AS n FROM matches WHERE status = 'scheduled' AND matchday IS NULL"
+    ).fetchone()["n"]
+    assert nulls == 2
+
+
+def test_cada_origen_aporta_lo_suyo_al_mismo_partido(mini_db, mini_settings, tmp_path, monkeypatch):
+    """football-data pone las cuotas y FBref la jornada: el partido se fusiona."""
+    _sin_calendario_local(mini_settings, tmp_path)
+    _calendar_fetch(
+        monkeypatch,
+        fd_csv=_FD_FIXTURES,
+        fbref_html=_FBREF_FIXTURES,
+        understat_json=_UNDERSTAT_FIXTURES,
+    )
+    registry = TeamRegistry(mini_settings.teams)
+    registry.seed_db(mini_db)
+
+    ingest_fixtures(mini_db, mini_settings, registry)
+    mid = f"{mini_settings.current_season}_barcelona_alaves"
+    row = mini_db.execute(
+        "SELECT matchday, date FROM matches WHERE match_id = ?", (mid,)
+    ).fetchone()
+    assert row["matchday"] == 7  # de FBref
+    assert row["date"] == "2026-09-19"
+    odds = mini_db.execute("SELECT open_h FROM odds WHERE match_id = ?", (mid,)).fetchone()
+    assert odds["open_h"] == 1.40  # de football-data
+    # y el partido que solo tienen FBref/Understat también entra
+    assert (
+        mini_db.execute("SELECT COUNT(*) AS n FROM matches WHERE status = 'scheduled'").fetchone()[
+            "n"
+        ]
+        == 2
+    )
+
+
+def test_fbref_usa_la_url_sin_ano_para_la_temporada_en_curso():
+    """La URL versionada da 404 mientras la temporada está viva: era el 404 de la 2026-27."""
+    from alaves_predictor.etl.ingest import _fbref_schedule_urls
+
+    settings = _settings_en_tmp(Path("/tmp"))
+    urls = _fbref_schedule_urls(settings.current_season, settings)
+    assert len(urls) == 2
+    assert "/comps/12/schedule/" in urls[0] and "2026-2027" not in urls[0]  # sin año, primero
+    assert "2026-2027" in urls[1]  # la versionada, como respaldo
+
+    # una temporada cerrada solo prueba la versionada
+    pasadas = _fbref_schedule_urls("2024-25", settings)
+    assert len(pasadas) == 1 and "2024-2025" in pasadas[0]

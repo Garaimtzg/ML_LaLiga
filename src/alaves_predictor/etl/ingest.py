@@ -77,12 +77,24 @@ def assign_matchdays(conn: sqlite3.Connection, season: str) -> None:
 def assign_scheduled_matchdays(conn: sqlite3.Connection, season: str, gap_days: int = 3) -> None:
     """Asigna jornada a los partidos PROGRAMADOS agrupando por fechas cercanas (F7).
 
-    El fixtures.csv no trae número de jornada. Se ordenan los programados por
-    fecha y se agrupan en jornadas: un salto de más de `gap_days` días respecto
-    al partido anterior abre una jornada nueva (una jornada de LaLiga ocupa
-    ~viernes-lunes). Se continúa desde la última jornada ya jugada. No toca los
-    partidos jugados (esos conservan la jornada oficial de FBref).
+    Es una DEDUCCIÓN, y solo se usa cuando no hay más remedio: si el calendario
+    vino de FBref, cada partido ya trae su jornada oficial (Wk) y esta función
+    no toca nada (ADR-029). La deducción falla justo donde más duele —jornadas
+    entre semana, partidos aplazados—, así que el dato oficial siempre gana.
+
+    Cuando hay que deducir: se ordenan los programados por fecha y un salto de
+    más de `gap_days` días abre jornada nueva (una jornada de LaLiga ocupa
+    ~viernes-lunes), continuando desde la última jugada. No toca los partidos
+    jugados (esos conservan la jornada oficial de FBref).
     """
+    pending = conn.execute(
+        "SELECT COUNT(*) AS n FROM matches WHERE season = ? AND status = 'scheduled' "
+        "AND matchday IS NULL",
+        (season,),
+    ).fetchone()["n"]
+    if not pending:
+        return  # todos traen jornada oficial: nada que deducir
+
     max_finished = (
         conn.execute(
             "SELECT MAX(matchday) AS m FROM matches WHERE season = ? AND status = 'finished'",
@@ -275,6 +287,24 @@ def _xg_coverage(conn: sqlite3.Connection, season: str) -> int:
     ).fetchone()["n"]
 
 
+def _fbref_schedule_cache(season: str, settings: Settings) -> Path:
+    return settings.data.raw_dir / "fbref" / f"schedule_{fbref.season_slug(season)}.html"
+
+
+def _fbref_schedule_urls(season: str, settings: Settings) -> list[str]:
+    """URLs candidatas del calendario, en orden de preferencia (ADR-029).
+
+    FBref versiona por temporada solo las ya cerradas: la vigente vive en la URL
+    sin año, y la versionada responde 404 hasta que la temporada acaba. Se
+    prueban las dos porque `current_season` es config, no una verdad de FBref.
+    """
+    cfg = settings.sources.fbref
+    versioned = fbref.schedule_url(season, cfg)
+    if season != settings.current_season:
+        return [versioned]
+    return [fbref.current_schedule_url(cfg), versioned]
+
+
 def _fetch_fbref_schedule(
     season: str, settings: Settings, *, force: bool = False
 ) -> tuple[list[fbref.FBrefMatch], str]:
@@ -291,7 +321,7 @@ def _fetch_fbref_schedule(
     """
     cfg = settings.sources.fbref
     url = fbref.schedule_url(season, cfg)
-    cache = settings.data.raw_dir / "fbref" / f"schedule_{fbref.season_slug(season)}.html"
+    cache = _fbref_schedule_cache(season, settings)
 
     # 1. Cache local
     if cache.exists() and not force:
@@ -300,14 +330,22 @@ def _fetch_fbref_schedule(
         except SourceFormatError:
             pass  # cache envenenada (página de bloqueo): re-resolver
 
-    # 2. FBref directo (fuente primaria; imprescindible en F7 para la temporada en curso)
-    try:
-        text = fetch_text(
-            url, cache, rate_limit_seconds=cfg.rate_limit_seconds, force=True, impersonate=True
-        )
-        return fbref.parse_schedule(text), fbref.SOURCE_NAME
-    except (SourceDownloadError, SourceFormatError):
-        pass  # bloqueado o página sin datos: probar el archivo histórico
+    # 2. FBref directo (fuente primaria; imprescindible en F7 para la temporada
+    #    en curso). Para la temporada vigente se prueba PRIMERO la URL sin año:
+    #    FBref solo versiona las temporadas cerradas, y la versionada da 404
+    #    mientras la temporada está en marcha (ADR-029).
+    for candidate in _fbref_schedule_urls(season, settings):
+        try:
+            text = fetch_text(
+                candidate,
+                cache,
+                rate_limit_seconds=cfg.rate_limit_seconds,
+                force=True,
+                impersonate=True,
+            )
+            return fbref.parse_schedule(text), fbref.SOURCE_NAME
+        except (SourceDownloadError, SourceFormatError):
+            continue  # bloqueado o página sin datos: siguiente candidato
 
     # 3. Wayback Machine: candidatos del índice CDX, más recientes primero
     try:
@@ -613,6 +651,71 @@ class FixturesReport:
         )
 
 
+@dataclass
+class PendingFixture:
+    """Un partido por jugar, ya resuelto a team_ids canónicos.
+
+    Los orígenes aportan cosas distintas —football-data trae cuotas pero solo
+    los encuentros inminentes; FBref trae la jornada oficial; Understat trae la
+    temporada entera— así que se fusionan campo a campo en vez de quedarse con
+    el primero entero (ADR-029).
+    """
+
+    home_id: str
+    away_id: str
+    match_date: date
+    matchday: int | None = None
+    odds_open: dict[str, tuple[float, float, float]] = field(default_factory=dict)
+
+
+def _fbref_fixtures(settings: Settings, *, force: bool = False) -> list[fbref.FBrefFixture]:
+    """Partidos por jugar según FBref, con su jornada oficial (ADR-029).
+
+    Reutiliza la página que la ingesta de xG acaba de dejar en cache: FBref pide
+    moderación a los bots (6 s entre peticiones) y esa página ya trae, en la
+    misma tabla, lo jugado y lo que falta por jugar. Si no hay cache utilizable
+    se descarga; si tampoco, se devuelve lista vacía (es una fuente opcional).
+    """
+    season = settings.current_season
+    cfg = settings.sources.fbref
+    cache = _fbref_schedule_cache(season, settings)
+    if cache.exists() and not force:
+        try:
+            return fbref.parse_fixtures(cache.read_text(encoding="utf-8"))
+        except SourceFormatError:
+            pass  # cache envenenada: intentar descarga
+    for candidate in _fbref_schedule_urls(season, settings):
+        try:
+            text = fetch_text(
+                candidate,
+                cache,
+                rate_limit_seconds=cfg.rate_limit_seconds,
+                force=True,
+                impersonate=True,
+            )
+            return fbref.parse_fixtures(text)
+        except (SourceDownloadError, SourceFormatError):
+            continue
+    return []
+
+
+def _understat_fixtures(
+    settings: Settings, *, force: bool = False
+) -> list[understat.UnderstatFixture]:
+    """Partidos por jugar según Understat: la temporada entera desde el día uno."""
+    season = settings.current_season
+    cfg = settings.sources.understat
+    cache = settings.data.raw_dir / "understat" / f"league_{understat.season_year(season)}.json"
+    text = fetch_text(
+        understat.league_data_url(season, cfg),
+        cache,
+        rate_limit_seconds=cfg.rate_limit_seconds,
+        force=force,
+        headers=understat.api_headers(season, cfg),
+    )
+    return understat.parse_league_fixtures(text)
+
+
 def ingest_fixtures(
     conn: sqlite3.Connection,
     settings: Settings,
@@ -620,98 +723,123 @@ def ingest_fixtures(
     *,
     force: bool = False,
 ) -> FixturesReport:
-    """Inserta los próximos partidos de la temporada actual como 'scheduled' (F7).
+    """Inserta los partidos por jugar de la temporada actual como 'scheduled' (F7).
 
-    Dos orígenes que se combinan (ADR-026):
-    1. El fixtures.csv global de football-data (los próximos encuentros; a
-       principio de temporada puede no listar aún la liga).
-    2. Un archivo LOCAL opcional (`[sources.football_data].local_fixtures_file`,
-       mismo formato) para sembrar el calendario oficial a mano hasta que
-       football-data lo publique. Si el remoto falla, el local basta.
+    Cuatro orígenes complementarios, en orden de preferencia (ADR-026/029):
 
-    Filtra la división y guarda cada encuentro no jugado con sus cuotas de
-    apertura. Nunca pisa un partido ya 'finished' y, si un mismo encuentro
-    aparece en los dos orígenes, manda el remoto (el local solo rellena lo que
-    el remoto no trae). Los equipos sin alias en config/teams.toml se saltan y
-    se devuelven para avisar.
+    1. **football-data** (`fixtures.csv`): pocos encuentros —solo los
+       inminentes— pero es el único con **cuotas de apertura**, que alimentan
+       la variante `con_cuotas` del modelo.
+    2. **FBref** (Scores & Fixtures): el único con la **jornada oficial** (Wk),
+       así que no hay que deducirla agrupando por fechas.
+    3. **Understat** (`getLeagueData`): la **temporada entera** desde el primer
+       día; es lo que permite proyectar la clasificación final.
+    4. Un archivo **local** opcional (`[sources.football_data].local_fixtures_file`),
+       para sembrar el calendario a mano si todo lo demás falla.
 
-    Devuelve siempre un FixturesReport que explica el resultado: un calendario
-    vacío nunca se despacha en silencio, porque sin él no hay nada que predecir.
+    No es una cascada de "el primero que responda": cada partido se fusiona
+    campo a campo, porque ningún origen lo tiene todo. La fecha la fija el
+    primer origen que traiga el partido; la jornada y las cuotas, el primero
+    que las tenga.
+
+    Nunca pisa un partido ya 'finished' (el resultado manda sobre el
+    calendario). Los equipos sin alias en config/teams.toml se saltan y se
+    devuelven para avisar. Devuelve siempre un FixturesReport que explica el
+    resultado: un calendario vacío nunca se despacha en silencio.
     """
     cfg = settings.sources.football_data
     season = settings.current_season
-
-    # Cada origen (remoto y local) se lee y parsea de forma AISLADA: si el
-    # remoto viene vacío o con formato raro (típico fuera de temporada), no
-    # debe tumbar el calendario local que el usuario haya sembrado.
-    sources: list[tuple[str, str]] = []  # (etiqueta, texto)
     problems: list[str] = []
-    try:
-        sources.append(
-            (
-                "remoto",
-                fetch_text(
-                    football_data.fixtures_url(cfg),
-                    settings.data.raw_dir / "football_data" / "fixtures.csv",
-                    rate_limit_seconds=cfg.rate_limit_seconds,
-                    force=force,
-                    encoding="utf-8",
-                ),
-            )
-        )
-    except ETLError as exc:
-        problems.append(f"remoto: {exc}")
-
-    local = Path(cfg.local_fixtures_file)
-    if local.exists():
-        sources.append(("local", local.read_text(encoding="utf-8")))
-
-    fixtures: list[football_data.FootballDataFixture] = []
     by_source: dict[str, int] = {}
-    for label, text in sources:
+    unknown: set[str] = set()
+    merged: dict[tuple[str, str], PendingFixture] = {}
+
+    def add(label: str, home: str, away: str, source_name: str, **fields) -> None:
+        """Fusiona un encuentro en el acumulador, resolviendo antes los equipos."""
+        if not (registry.knows(source_name, home) and registry.knows(source_name, away)):
+            unknown.update(n for n in (home, away) if not registry.knows(source_name, n))
+            return
+        key = (registry.resolve(source_name, home), registry.resolve(source_name, away))
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = PendingFixture(home_id=key[0], away_id=key[1], **fields)
+        else:
+            # Solo se rellenan huecos: el origen más prioritario ya decidió.
+            if existing.matchday is None and fields.get("matchday") is not None:
+                existing.matchday = fields["matchday"]
+            if not existing.odds_open and fields.get("odds_open"):
+                existing.odds_open = fields["odds_open"]
+        by_source[label] = by_source.get(label, 0) + 1
+
+    def add_football_data(label: str, text: str) -> None:
         try:
             parsed = football_data.parse_fixtures(text, cfg.division)
         except SourceFormatError as exc:
             problems.append(f"{label}: {exc}")
-            continue
-        by_source[label] = len(parsed)
+            return
         if not parsed:
             problems.append(f"{label}: sin partidos de la división {cfg.division}")
-        fixtures.extend(parsed)
+        for f in parsed:
+            add(
+                label,
+                f.home_team,
+                f.away_team,
+                "football_data",
+                match_date=f.match_date,
+                odds_open=dict(f.odds_open),
+            )
 
-    if not fixtures and not local.exists() and problems:
-        raise SourceDownloadError(
-            "No hay calendario disponible (" + "; ".join(problems) + "). Crea el archivo "
-            f"local '{local}' (formato football-data: Div,Date,Time,HomeTeam,AwayTeam) "
-            "con el calendario oficial para sembrarlo."
+    # Los orígenes se procesan EN ORDEN DE PREFERENCIA y cada uno solo rellena
+    # lo que el anterior dejó vacío; así la precedencia se lee de arriba abajo.
+
+    # 1. football-data: pocos encuentros, pero es el único con cuotas.
+    try:
+        add_football_data(
+            "football-data",
+            fetch_text(
+                football_data.fixtures_url(cfg),
+                settings.data.raw_dir / "football_data" / "fixtures.csv",
+                rate_limit_seconds=cfg.rate_limit_seconds,
+                force=force,
+                encoding="utf-8",
+            ),
         )
-    now = datetime.now(UTC).isoformat()
+    except ETLError as exc:
+        problems.append(f"football-data: {exc}")
 
+    # 2. FBref: el único con la jornada oficial (Wk). Sin `force` a propósito:
+    #    el paso de xG del ciclo acaba de dejar esa misma página en cache, y
+    #    FBref pide moderación a los bots (6 s entre peticiones).
+    try:
+        for f in _fbref_fixtures(settings):
+            add(
+                "fbref",
+                f.home_team,
+                f.away_team,
+                "fbref",
+                match_date=f.match_date,
+                matchday=f.matchday,
+            )
+    except ETLError as exc:
+        problems.append(f"fbref: {exc}")
+
+    # 3. Understat: la temporada entera, que es lo que permite proyectar.
+    try:
+        for u in _understat_fixtures(settings, force=force):
+            add("understat", u.home_team, u.away_team, "understat", match_date=u.match_date)
+    except ETLError as exc:
+        problems.append(f"understat: {exc}")
+
+    # 4. Siembra local a mano (formato football-data), como último recurso.
+    local = Path(cfg.local_fixtures_file)
+    if local.exists():
+        add_football_data("local", local.read_text(encoding="utf-8"))
+
+    now = datetime.now(UTC).isoformat()
     inserted = 0
     skipped_finished = 0
-    unknown: set[str] = set()
-    seen: set[str] = set()
-    for f in fixtures:
-        if not (
-            registry.knows("football_data", f.home_team)
-            and registry.knows("football_data", f.away_team)
-        ):
-            unknown.update(
-                name
-                for name in (f.home_team, f.away_team)
-                if not registry.knows("football_data", name)
-            )
-            continue
-        home_id = registry.resolve("football_data", f.home_team)
-        away_id = registry.resolve("football_data", f.away_team)
-        match_id = make_match_id(season, home_id, away_id)
-        if match_id in seen:
-            # El remoto se parsea antes que el local y gana: el archivo local es
-            # una siembra manual para cuando football-data aún no publica el
-            # calendario, y sus fechas envejecen en cuanto sí lo publica (una
-            # fecha vieja movería el partido de jornada al agrupar, ADR-027).
-            continue
-        seen.add(match_id)
+    for fixture in merged.values():
+        match_id = make_match_id(season, fixture.home_id, fixture.away_id)
         existing = conn.execute(
             "SELECT status FROM matches WHERE match_id = ?", (match_id,)
         ).fetchone()
@@ -724,10 +852,10 @@ def ingest_fixtures(
             {
                 "match_id": match_id,
                 "season": season,
-                "matchday": None,
-                "date": f.match_date.isoformat(),
-                "home_id": home_id,
-                "away_id": away_id,
+                "matchday": fixture.matchday,
+                "date": fixture.match_date.isoformat(),
+                "home_id": fixture.home_id,
+                "away_id": fixture.away_id,
                 "home_goals": None,
                 "away_goals": None,
                 "status": "scheduled",
@@ -736,7 +864,7 @@ def ingest_fixtures(
             },
             key_cols=["match_id"],
         )
-        for bookmaker, triplet in f.odds_open.items():
+        for bookmaker, triplet in fixture.odds_open.items():
             db.upsert(
                 conn,
                 "odds",

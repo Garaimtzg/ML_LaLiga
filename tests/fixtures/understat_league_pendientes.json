@@ -1,0 +1,31 @@
+{
+ "datesData": [
+  {
+   "id": "3000",
+   "isResult": true,
+   "h": {"id": "0", "title": "Alaves", "short_title": "ALA"},
+   "a": {"id": "50", "title": "Getafe", "short_title": "GET"},
+   "goals": {"h": "2", "a": "1"},
+   "xG": {"h": "1.6000", "a": "0.8000"},
+   "datetime": "2026-08-15 21:00:00"
+  },
+  {
+   "id": "3001",
+   "isResult": false,
+   "h": {"id": "50", "title": "Barcelona", "short_title": "BAR"},
+   "a": {"id": "0", "title": "Alaves", "short_title": "ALA"},
+   "goals": {"h": null, "a": null},
+   "xG": {"h": null, "a": null},
+   "datetime": "2026-09-19 18:30:00"
+  },
+  {
+   "id": "3002",
+   "isResult": false,
+   "h": {"id": "0", "title": "Alaves", "short_title": "ALA"},
+   "a": {"id": "60", "title": "Real Sociedad", "short_title": "RSO"},
+   "goals": {"h": null, "a": null},
+   "xG": {"h": null, "a": null},
+   "datetime": "2026-09-26 16:15:00"
+  }
+ ]
+}

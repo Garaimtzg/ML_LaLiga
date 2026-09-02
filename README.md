@@ -20,7 +20,7 @@ la clasificación final mediante simulación Monte Carlo.
 | **F4** | Simulador Monte Carlo de la clasificación | ✅ **Completada** — simulación vectorizada (N=10.000) sobre las P(1X2) del ensemble, con DG del Dixon-Coles para el desempate; salidas por equipo (posición esperada, P(título/Champions/Europa/descenso), puntos) y modo demo sobre temporadas históricas |
 | **F5** | Explicabilidad (SHAP) y análisis de variables | ✅ **Completada** — SHAP global (TreeSHAP nativo de LightGBM, sin la librería `shap`), beeswarm, dependencia parcial y ablation study por bloques sobre la variante sin cuotas; informe en `docs/reports/feature_importance.md` |
 | **F6** | Dashboard Streamlit | ✅ **Completada** — 6 páginas (próxima jornada, clasificación proyectada con heatmap, el Alavés en detalle, explicabilidad con waterfall por partido, rendimiento del modelo, registro de decisiones); lógica testeable en `src/`, presentación fina en `app/dashboard.py` |
-| **F7** | Modo temporada: ingesta post-jornada + reentrenamiento semanal | ✅ **Completada** — `alaves ingest --matchday` ejecuta el ciclo completo (ingesta de la temporada en curso + calendario → evalúa predicciones → reentrena → predice la próxima jornada → simula); calendario vía `fixtures.csv` de football-data (ADR-026). Con la 2026-27 ya arrancada, la temporada a medias entrena pero no se usa para validar ni testear (ADR-027) |
+| **F7** | Modo temporada: ingesta post-jornada + reentrenamiento semanal | ✅ **Completada** — `alaves ingest --matchday` ejecuta el ciclo completo (ingesta de la temporada en curso + calendario → evalúa predicciones → reentrena → predice la próxima jornada → simula); calendario fusionando football-data, FBref y Understat, sin siembra manual (ADR-026/029). Con la 2026-27 ya arrancada, la temporada a medias entrena pero no se usa para validar ni testear (ADR-027) |
 
 ## Requisitos
 
@@ -55,7 +55,7 @@ cd ~ && mkdir -p proyectos && cd proyectos
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (168 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (172 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
@@ -114,8 +114,8 @@ uv run mypy src                        # tipos (modo básico)
 | Fuente | Aporta | Tablas |
 |--------|--------|--------|
 | [football-data.co.uk](https://www.football-data.co.uk/spainm.php) | Resultados, tiros/córners/faltas/tarjetas y **cuotas** (bet365, Pinnacle, máx./media de mercado; apertura y cierre) | `matches`, `match_stats`, `odds` |
-| [FBref](https://fbref.com/en/comps/12/) | **xG** histórico + **jornada oficial** (Wk) | `match_stats.xg`, `matches.matchday` |
-| [Understat](https://understat.com) | **xG de relleno** vía su API interna `getLeagueData` (donde FBref no lo aporta; fuente en vivo prevista para F7) | `match_stats.xg` |
+| [FBref](https://fbref.com/en/comps/12/) | **xG** histórico + **jornada oficial** (Wk), de partidos jugados y por jugar | `match_stats.xg`, `matches.matchday` |
+| [Understat](https://understat.com) | **xG de relleno** vía su API interna `getLeagueData` (donde FBref no lo aporta) y el **calendario completo** de la temporada (ADR-029) | `match_stats.xg`, `matches` |
 | [ClubElo](http://clubelo.com) | Rating **Elo** histórico por club | `elo` |
 
 Cobertura: temporadas **2018-19 → 2025-26** (≈ 3.040 partidos). Las
@@ -275,10 +275,25 @@ que se necesita es la lista de próximos partidos, y las alineaciones/lesiones
 de API-Football no están en el feature set v1 — no compensan su API key ni su
 límite de 100 peticiones/día.
 
-> **Ver la próxima jornada antes de que football-data publique el calendario**:
-> el `fixtures.csv` remoto solo lista los partidos inminentes, así que a
-> principio de temporada aún no trae la liga. Para sembrar el calendario oficial
-> a mano, crea `data/fixtures.csv` (formato football-data) y `alaves ingest
+### De dónde sale el calendario (ADR-029)
+
+Ningún origen tiene el calendario completo *y* todo lo que hace falta, así que
+`ingest_fixtures` los **fusiona campo a campo** en este orden de preferencia:
+
+| Orden | Origen | Qué aporta que los demás no |
+|-------|--------|------------------------------|
+| 1 | football-data `fixtures.csv` | **cuotas de apertura** (variante `con_cuotas`) |
+| 2 | FBref *Scores & Fixtures* | **jornada oficial (Wk)** |
+| 3 | Understat `getLeagueData` | **la temporada entera**, desde el primer día |
+| 4 | `data/fixtures.csv` local | último recurso manual |
+
+La fecha la fija el primer origen que traiga el partido; la jornada y las cuotas,
+el primero que las tenga. Como FBref y Understat ya se descargan para el xG, el
+calendario no cuesta peticiones nuevas. Y si todos los partidos traen jornada
+oficial, la deducción por proximidad de fechas ni se ejecuta.
+
+> **Siembra manual (ya no hace falta, pero sigue ahí)**: si los tres orígenes
+> fallan, crea `data/fixtures.csv` (formato football-data) y `alaves ingest
 > --matchday` lo recogerá:
 >
 > ```csv
@@ -376,7 +391,7 @@ uv run streamlit run app/dashboard.py
 │           ├── understat.py          # xG de relleno vía API interna (ADR-011)
 │           └── clubelo.py
 ├── app/dashboard.py                  # dashboard Streamlit (solo presentación)
-└── tests/                            # 168 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 172 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)
@@ -411,6 +426,7 @@ uv run streamlit run app/dashboard.py
 | [026](docs/decisions/026-modo-temporada-y-calendario.md) | Modo temporada (F7): ciclo post-jornada y calendario vía fixtures.csv de football-data (API-Football diferida) |
 | [027](docs/decisions/027-temporada-en-curso-a-medias.md) | La temporada en curso entrena pero no juzga: validación y backtest sobre temporadas completas, validación propia de la BD, el calendario remoto manda sobre la siembra local |
 | [028](docs/decisions/028-fallos-visibles-en-la-ingesta-semanal.md) | La ingesta semanal falla a la cara: todos los equipos sin alias de una vez, causa exacta del fallo y ningún calendario vacío sin explicación |
+| [029](docs/decisions/029-calendario-de-fbref-y-understat.md) | El calendario se obtiene solo fusionando football-data (cuotas) + FBref (jornada oficial) + Understat (temporada entera); URL de FBref sin año para la temporada en curso |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 
