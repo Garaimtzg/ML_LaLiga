@@ -237,9 +237,9 @@ def test_el_calendario_remoto_manda_sobre_el_local(mini_db, mini_settings, tmp_p
         "alaves_predictor.etl.ingest.fetch_text",
         lambda *a, **k: _FIXTURE_CSV.format(date="15/03/2027"),
     )
-    inserted, unknown = ingest_fixtures(mini_db, mini_settings, registry)
+    fixtures = ingest_fixtures(mini_db, mini_settings, registry)
 
-    assert inserted == 1 and not unknown  # un solo partido, no dos
+    assert fixtures.inserted == 1 and not fixtures.unknown_teams  # un partido, no dos
     row = mini_db.execute("SELECT date, status FROM matches").fetchone()
     assert row["date"] == "2027-03-15"  # la fecha del remoto, no la local
     assert row["status"] == "scheduled"
@@ -257,8 +257,7 @@ def test_el_local_rellena_lo_que_el_remoto_no_trae(mini_db, mini_settings, tmp_p
         "alaves_predictor.etl.ingest.fetch_text",
         lambda *a, **k: "Div,Date,Time,HomeTeam,AwayTeam\nE0,01/02/2027,21:00,Arsenal,Chelsea\n",
     )
-    inserted, _ = ingest_fixtures(mini_db, mini_settings, registry)
-    assert inserted == 1
+    assert ingest_fixtures(mini_db, mini_settings, registry).inserted == 1
     assert mini_db.execute("SELECT date FROM matches").fetchone()["date"] == "2027-02-01"
 
 
@@ -290,8 +289,7 @@ def test_el_calendario_nunca_pisa_un_partido_jugado(mini_db, mini_settings, tmp_
     mini_settings.sources.football_data.local_fixtures_file = str(local)
     monkeypatch.setattr("alaves_predictor.etl.ingest.fetch_text", lambda *a, **k: "")
 
-    inserted, _ = ingest_fixtures(mini_db, mini_settings, registry)
-    assert inserted == 0
+    assert ingest_fixtures(mini_db, mini_settings, registry).inserted == 0
     row = mini_db.execute("SELECT date, status, home_goals FROM matches").fetchone()
     assert (row["date"], row["status"], row["home_goals"]) == ("2026-08-16", "finished", 2)
 
@@ -339,3 +337,52 @@ def test_focus_timeline_ignora_los_partidos_por_jugar(model_settings):
     tl = dd.focus_timeline(df, model_settings, "2026-27")
     assert list(tl["matchday"]) == [1]
     assert list(tl["resultado"]) == ["V"] and list(tl["puntos_acumulados"]) == [3]
+
+
+# --- Fallos que se dan con la temporada ya arrancada -------------------------
+
+
+def test_todos_los_equipos_desconocidos_se_informan_de_una_vez(mini_db, mini_settings, monkeypatch):
+    """Un ascenso de varios equipos no debe obligar a reingerir uno por uno.
+
+    Antes se resolvía dentro del bucle y la ingesta abortaba en el PRIMER
+    nombre desconocido: el siguiente solo aparecía tras arreglar el anterior.
+    """
+    from alaves_predictor.etl.errors import UnknownTeamError
+    from alaves_predictor.etl.ingest import ingest_football_data_season
+
+    csv = (
+        "Div,Date,HomeTeam,AwayTeam,FTHG,FTAG,FTR\n"
+        "SP1,15/08/2026,Malaga,Alaves,1,2,A\n"
+        "SP1,16/08/2026,Getafe,Cordoba,0,0,D\n"
+    )
+    monkeypatch.setattr("alaves_predictor.etl.ingest.fetch_text", lambda *a, **k: csv)
+    registry = TeamRegistry(mini_settings.teams)
+    registry.seed_db(mini_db)
+
+    with pytest.raises(UnknownTeamError) as exc:
+        ingest_football_data_season(mini_db, "2026-27", mini_settings, registry, force=True)
+    assert exc.value.raw_names == ["Cordoba", "Malaga"]  # los dos, no solo el primero
+    # y no ha entrado ningún partido a medias
+    assert mini_db.execute("SELECT COUNT(*) AS n FROM matches").fetchone()["n"] == 0
+
+
+def test_un_calendario_vacio_explica_por_que(mini_db, mini_settings, tmp_path, monkeypatch):
+    """Sin calendario no hay nada que predecir: nunca se despacha un 0 en silencio."""
+    registry = TeamRegistry(mini_settings.teams)
+    registry.seed_db(mini_db)
+    # hay archivo local (así que no se lanza excepción) pero sin partidos de SP1
+    local = tmp_path / "fixtures.csv"
+    local.write_text(
+        "Div,Date,Time,HomeTeam,AwayTeam\nE0,01/02/2027,21:00,Arsenal,Chelsea\n", encoding="utf-8"
+    )
+    mini_settings.sources.football_data.local_fixtures_file = str(local)
+    monkeypatch.setattr(
+        "alaves_predictor.etl.ingest.fetch_text",
+        lambda *a, **k: "Div,Date,Time,HomeTeam,AwayTeam\nE0,01/02/2027,21:00,Arsenal,Chelsea\n",
+    )
+
+    fixtures = ingest_fixtures(mini_db, mini_settings, registry)
+    assert fixtures.inserted == 0
+    assert fixtures.by_source == {"remoto": 0, "local": 0}
+    assert "SP1" in fixtures.explain_empty()

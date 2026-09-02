@@ -127,6 +127,21 @@ def ingest_football_data_season(
     matches = football_data.parse_csv(text)
     now = datetime.now(UTC).isoformat()
 
+    # Los nombres desconocidos se recogen TODOS antes de insertar nada, y se
+    # informan de una vez. Resolver dentro del bucle abortaba en el primero, así
+    # que un ascenso de varios equipos obligaba a repetir la ingesta una vez por
+    # equipo, descubriendo el siguiente nombre solo tras arreglar el anterior.
+    unknown = sorted(
+        {
+            name
+            for m in matches
+            for name in (m.home_team, m.away_team)
+            if not registry.knows("football_data", name)
+        }
+    )
+    if unknown:
+        raise UnknownTeamError("football_data", unknown, context=f"temporada {season}")
+
     for m in matches:
         home_id = registry.resolve("football_data", m.home_team)
         away_id = registry.resolve("football_data", m.away_team)
@@ -573,13 +588,43 @@ def ingest_clubelo(
     return rows_by_team, unavailable
 
 
+@dataclass
+class FixturesReport:
+    """Resultado de leer el calendario: qué entró y qué no, y por qué (ADR-028)."""
+
+    inserted: int = 0
+    unknown_teams: list[str] = field(default_factory=list)
+    # Encuentros del calendario que ya constan jugados en la BD (se saltan).
+    skipped_finished: int = 0
+    # Por origen ("remoto"/"local"): cuántos encuentros de la división aportó.
+    by_source: dict[str, int] = field(default_factory=dict)
+    # Motivos por los que un origen no aportó nada (descarga o formato).
+    problems: list[str] = field(default_factory=list)
+
+    @property
+    def found_nothing(self) -> bool:
+        """No hay calendario del que tirar (distinto de 'ya está todo jugado')."""
+        return self.inserted == 0 and self.skipped_finished == 0
+
+    def explain_empty(self) -> str:
+        """Por qué no hay calendario, en una frase para el aviso del CLI."""
+        if self.problems:
+            return "; ".join(self.problems)
+        if not self.by_source:
+            return "ningún origen de calendario disponible"
+        return (
+            "los orígenes respondieron pero no traen partidos de la división "
+            "(típico si football-data aún no publica los próximos encuentros)"
+        )
+
+
 def ingest_fixtures(
     conn: sqlite3.Connection,
     settings: Settings,
     registry: TeamRegistry,
     *,
     force: bool = False,
-) -> tuple[int, list[str]]:
+) -> FixturesReport:
     """Inserta los próximos partidos de la temporada actual como 'scheduled' (F7).
 
     Dos orígenes que se combinan (ADR-026):
@@ -594,6 +639,9 @@ def ingest_fixtures(
     aparece en los dos orígenes, manda el remoto (el local solo rellena lo que
     el remoto no trae). Los equipos sin alias en config/teams.toml se saltan y
     se devuelven para avisar.
+
+    Devuelve siempre un FixturesReport que explica el resultado: un calendario
+    vacío nunca se despacha en silencio, porque sin él no hay nada que predecir.
     """
     cfg = settings.sources.football_data
     season = settings.current_season
@@ -624,11 +672,17 @@ def ingest_fixtures(
         sources.append(("local", local.read_text(encoding="utf-8")))
 
     fixtures: list[football_data.FootballDataFixture] = []
+    by_source: dict[str, int] = {}
     for label, text in sources:
         try:
-            fixtures.extend(football_data.parse_fixtures(text, cfg.division))
+            parsed = football_data.parse_fixtures(text, cfg.division)
         except SourceFormatError as exc:
             problems.append(f"{label}: {exc}")
+            continue
+        by_source[label] = len(parsed)
+        if not parsed:
+            problems.append(f"{label}: sin partidos de la división {cfg.division}")
+        fixtures.extend(parsed)
 
     if not fixtures and not local.exists() and problems:
         raise SourceDownloadError(
@@ -639,6 +693,7 @@ def ingest_fixtures(
     now = datetime.now(UTC).isoformat()
 
     inserted = 0
+    skipped_finished = 0
     unknown: set[str] = set()
     seen: set[str] = set()
     for f in fixtures:
@@ -666,7 +721,8 @@ def ingest_fixtures(
             "SELECT status FROM matches WHERE match_id = ?", (match_id,)
         ).fetchone()
         if existing and existing["status"] == "finished":
-            continue  # ya jugado: el resultado manda sobre el calendario
+            skipped_finished += 1  # ya jugado: el resultado manda sobre el calendario
+            continue
         db.upsert(
             conn,
             "matches",
@@ -705,7 +761,13 @@ def ingest_fixtures(
             )
         inserted += 1
     conn.commit()
-    return inserted, sorted(unknown)
+    return FixturesReport(
+        inserted=inserted,
+        unknown_teams=sorted(unknown),
+        skipped_finished=skipped_finished,
+        by_source=by_source,
+        problems=problems,
+    )
 
 
 @dataclass
@@ -739,6 +801,13 @@ def ingest_matchday(
     try:
         report.finished = ingest_football_data_season(conn, season, settings, registry, force=force)
         assign_matchdays(conn, season)
+    except UnknownTeamError as exc:
+        # No es que falte el dato: está y no se puede leer. Sin esto, NADA de la
+        # temporada entra (ni resultados ni xG ni cuotas), así que se dice claro.
+        report.warnings.append(
+            f"NO se ha ingerido NINGÚN resultado de {season}: {exc} "
+            "Arréglalo en config/teams.toml y vuelve a lanzar `alaves ingest --matchday`."
+        )
     except ETLError as exc:
         report.warnings.append(
             f"football-data aún no publica resultados de {season} ({exc}); "
@@ -764,11 +833,20 @@ def ingest_matchday(
 
     # 3. Calendario de próximos partidos (fixtures) + jornada de los programados.
     try:
-        report.scheduled, unknown = ingest_fixtures(conn, settings, registry, force=force)
+        fixtures = ingest_fixtures(conn, settings, registry, force=force)
+        report.scheduled = fixtures.inserted
         assign_scheduled_matchdays(conn, season)
-        if unknown:
+        if fixtures.unknown_teams:
             report.warnings.append(
-                f"Equipos del calendario sin alias en config/teams.toml: {', '.join(unknown)}."
+                "Equipos del calendario sin alias en config/teams.toml: "
+                f"{', '.join(fixtures.unknown_teams)}."
+            )
+        if fixtures.found_nothing:
+            # Sin calendario no hay próxima jornada que predecir: decir por qué,
+            # nunca despachar un 0 en silencio. (Que no entre nada porque los
+            # encuentros ya están jugados no es un problema: no se avisa.)
+            report.warnings.append(
+                f"El calendario no aportó ningún partido nuevo: {fixtures.explain_empty()}."
             )
     except ETLError as exc:
         report.warnings.append(f"No se pudo obtener el calendario de próximos partidos: {exc}")

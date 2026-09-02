@@ -43,9 +43,10 @@ def test_parse_fixtures_tolera_bom():
 def test_ingest_fixtures_inserta_programados(mini_db, mini_settings, fake_fetch):
     registry = TeamRegistry(mini_settings.teams)
     registry.seed_db(mini_db)
-    inserted, unknown = ingest_fixtures(mini_db, mini_settings, registry)
-    assert inserted == 3  # Alaves-Getafe, Barcelona-Sociedad, Sociedad-Alaves (del fixture mini)
-    assert unknown == []
+    fixtures = ingest_fixtures(mini_db, mini_settings, registry)
+    # Alaves-Getafe, Barcelona-Sociedad, Sociedad-Alaves (del fixture mini)
+    assert fixtures.inserted == 3
+    assert fixtures.unknown_teams == [] and fixtures.problems == []
     rows = mini_db.execute(
         "SELECT status, home_goals FROM matches WHERE status = 'scheduled'"
     ).fetchall()
@@ -76,8 +77,9 @@ def test_ingest_fixtures_desde_archivo_local(mini_db, mini_settings, monkeypatch
 
     registry = TeamRegistry(mini_settings.teams)
     registry.seed_db(mini_db)
-    inserted, unknown = ingest_fixtures(mini_db, mini_settings, registry)
-    assert inserted == 1 and unknown == []
+    fixtures = ingest_fixtures(mini_db, mini_settings, registry)
+    assert fixtures.inserted == 1 and fixtures.unknown_teams == []
+    assert fixtures.by_source == {"local": 1}  # el remoto no aportó nada
     mid = make_match_id(mini_settings.current_season, "alaves", "getafe")
     row = mini_db.execute("SELECT status FROM matches WHERE match_id = ?", (mid,)).fetchone()
     assert row["status"] == "scheduled"

@@ -55,7 +55,7 @@ cd ~ && mkdir -p proyectos && cd proyectos
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (165 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (167 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
@@ -314,6 +314,24 @@ La 2026-27 está en marcha, así que la BD contiene por primera vez una temporad
   ninguna predicción guardada tenga fecha posterior a su partido.
 - `alaves status` separa jugados de programados y resume dónde va la temporada.
 
+> **Equipos ascendidos**: football-data escribe los nombres a su manera y la
+> ingesta falla ruidosamente ante uno no registrado (ADR-005) — es a propósito:
+> un `team_id` inventado por el pipeline ensuciaría el histórico. El aviso lista
+> **todos** los nombres desconocidos de una vez (ADR-028), así que se arreglan
+> en una sola pasada añadiendo su bloque a `config/teams.toml`:
+>
+> ```toml
+> [malaga]
+> name = "Málaga CF"
+> football_data = "Malaga"
+> fbref = ["Málaga", "Malaga CF"]
+> understat = "Malaga"
+> clubelo = "Malaga"
+> ```
+>
+> Ojo: mientras un equipo no esté registrado **no entra nada** de la temporada
+> (ni resultados, ni xG, ni cuotas), porque la ingesta aborta antes de insertar.
+
 Rutina semanal, después de cada jornada:
 
 ```bash
@@ -358,7 +376,7 @@ uv run streamlit run app/dashboard.py
 │           ├── understat.py          # xG de relleno vía API interna (ADR-011)
 │           └── clubelo.py
 ├── app/dashboard.py                  # dashboard Streamlit (solo presentación)
-└── tests/                            # 165 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 167 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)
@@ -392,6 +410,7 @@ uv run streamlit run app/dashboard.py
 | [025](docs/decisions/025-dashboard-streamlit.md) | Dashboard Streamlit con lógica testeable en `src/` y presentación fina en `app/`; proyección compartida con el CLI |
 | [026](docs/decisions/026-modo-temporada-y-calendario.md) | Modo temporada (F7): ciclo post-jornada y calendario vía fixtures.csv de football-data (API-Football diferida) |
 | [027](docs/decisions/027-temporada-en-curso-a-medias.md) | La temporada en curso entrena pero no juzga: validación y backtest sobre temporadas completas, validación propia de la BD, el calendario remoto manda sobre la siembra local |
+| [028](docs/decisions/028-fallos-visibles-en-la-ingesta-semanal.md) | La ingesta semanal falla a la cara: todos los equipos sin alias de una vez, causa exacta del fallo y ningún calendario vacío sin explicación |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 
