@@ -20,8 +20,8 @@ class LeagueConfig(BaseModel):
     zones: dict[str, list[int]] = Field(
         default_factory=lambda: {
             "titulo": [1, 1],
-            "champions": [1, 4],
-            "europa": [5, 6],
+            "champions": [1, 5],  # 4 directas + 5ª por European Performance Spot
+            "europa": [6, 6],
             "conference": [7, 7],
             "descenso": [18, 20],
         }
@@ -36,6 +36,11 @@ class LeagueConfig(BaseModel):
     def matches_per_season(self) -> int:
         """Partidos totales: n·(n−1) (cada par se enfrenta ida y vuelta)."""
         return self.teams_per_season * (self.teams_per_season - 1)
+
+    @property
+    def matches_per_round(self) -> int:
+        """Partidos de una jornada: todos los equipos juegan, n/2 encuentros."""
+        return self.teams_per_season // 2
 
 
 class DataConfig(BaseModel):
@@ -120,6 +125,11 @@ class FootballDataConfig(BaseModel):
     base_url: str
     division: str = "SP1"
     rate_limit_seconds: float = 1.0
+    # Archivo único de próximos partidos de todas las ligas (F7, ADR-026).
+    fixtures_url: str = "https://www.football-data.co.uk/fixtures.csv"
+    # Calendario local opcional (mismo formato) para sembrar los fixtures a mano
+    # hasta que football-data publique la temporada (F7, ADR-026).
+    local_fixtures_file: str = "data/fixtures.csv"
 
 
 class FBrefConfig(BaseModel):

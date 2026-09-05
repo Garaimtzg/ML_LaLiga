@@ -20,7 +20,7 @@ la clasificación final mediante simulación Monte Carlo.
 | **F4** | Simulador Monte Carlo de la clasificación | ✅ **Completada** — simulación vectorizada (N=10.000) sobre las P(1X2) del ensemble, con DG del Dixon-Coles para el desempate; salidas por equipo (posición esperada, P(título/Champions/Europa/descenso), puntos) y modo demo sobre temporadas históricas |
 | **F5** | Explicabilidad (SHAP) y análisis de variables | ✅ **Completada** — SHAP global (TreeSHAP nativo de LightGBM, sin la librería `shap`), beeswarm, dependencia parcial y ablation study por bloques sobre la variante sin cuotas; informe en `docs/reports/feature_importance.md` |
 | **F6** | Dashboard Streamlit | ✅ **Completada** — 6 páginas (próxima jornada, clasificación proyectada con heatmap, el Alavés en detalle, explicabilidad con waterfall por partido, rendimiento del modelo, registro de decisiones); lógica testeable en `src/`, presentación fina en `app/dashboard.py` |
-| F7 | Modo temporada: ingesta post-jornada + reentrenamiento semanal | Pendiente |
+| **F7** | Modo temporada: ingesta post-jornada + reentrenamiento semanal | ✅ **Completada** — `alaves ingest --matchday` ejecuta el ciclo completo (ingesta de la temporada en curso + calendario → evalúa predicciones → reentrena → predice la próxima jornada → simula); calendario fusionando football-data, FBref y Understat, sin siembra manual (ADR-026/029). Con la 2026-27 ya arrancada, la temporada a medias entrena pero no se usa para validar ni testear (ADR-027) |
 
 ## Requisitos
 
@@ -55,7 +55,7 @@ cd ~ && mkdir -p proyectos && cd proyectos
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (103 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (182 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
@@ -83,6 +83,7 @@ uv run alaves backtest --seasons 3   # backtest jornada a jornada (~unos minutos
 | `uv run alaves ingest --historical` | ETL histórico completo (con cache; `--force` re-descarga) | ✅ F1 |
 | `uv run alaves validate` | Chequeos de integridad de la BD (falla con exit code ≠ 0) | ✅ F1 |
 | `uv run alaves status` | Filas por tabla y partidos por temporada | ✅ F1 |
+| `uv run alaves sources` | Prueba cada fuente de datos y muestra qué responde (diagnóstico de red) | ✅ F7 |
 | `uv run alaves features` | Construye el feature set v1 (tabla `features` + Parquet) | ✅ F2 |
 | `uv run alaves baselines` | Evalúa los 3 baselines walk-forward e informa en `docs/reports/` | ✅ F2 |
 | `uv run alaves train [--no-odds]` | Entrena DC + LightGBM + calibración + ensemble y registra la versión | ✅ F3 |
@@ -91,13 +92,14 @@ uv run alaves backtest --seasons 3   # backtest jornada a jornada (~unos minutos
 | `uv run alaves simulate [--season S --from-matchday N]` | Monte Carlo de la clasificación proyectada | ✅ F4 |
 | `uv run alaves report --importance` | Informe SHAP / importancia de variables + ablation | ✅ F5 |
 | `uv run streamlit run app/dashboard.py` | Dashboard interactivo (6 páginas) | ✅ F6 |
-| `uv run alaves ingest --matchday N` | Ingesta post-jornada | F7 |
+| `uv run alaves ingest --matchday` | Ciclo post-jornada completo (ingesta → evalúa → reentrena → predice → simula). Sin número: refresca toda la temporada en curso | ✅ F7 |
 
-\* `predict` está completo, pero necesita partidos con estado `scheduled` en la
-BD; el calendario de la 2026-27 se ingiere en la F7 (API-Football). Hasta
-entonces avisa honestamente de que no hay nada que predecir.
+\* `predict` y `simulate` dependen del calendario que deja en la BD
+`alaves ingest --matchday` (partidos `scheduled`). Con la 2026-27 en marcha
+predicen la próxima jornada real; si no hubiera calendario, lo dicen en vez de
+inventarse partidos.
 
-Los comandos de fases futuras existen como stubs que lo indican honestamente.
+Todos los comandos de SPEC §10 están implementados (las siete fases completas).
 
 Desarrollo:
 
@@ -113,8 +115,8 @@ uv run mypy src                        # tipos (modo básico)
 | Fuente | Aporta | Tablas |
 |--------|--------|--------|
 | [football-data.co.uk](https://www.football-data.co.uk/spainm.php) | Resultados, tiros/córners/faltas/tarjetas y **cuotas** (bet365, Pinnacle, máx./media de mercado; apertura y cierre) | `matches`, `match_stats`, `odds` |
-| [FBref](https://fbref.com/en/comps/12/) | **xG** histórico + **jornada oficial** (Wk) | `match_stats.xg`, `matches.matchday` |
-| [Understat](https://understat.com) | **xG de relleno** vía su API interna `getLeagueData` (donde FBref no lo aporta; fuente en vivo prevista para F7) | `match_stats.xg` |
+| [FBref](https://fbref.com/en/comps/12/) | **xG** histórico + **jornada oficial** (Wk), de partidos jugados y por jugar. *Opcional en la temporada en curso*: si no responde, Understat cubre el xG y la jornada se deduce (ADR-029) | `match_stats.xg`, `matches.matchday` |
+| [Understat](https://understat.com) | **xG de relleno** vía su API interna `getLeagueData` (donde FBref no lo aporta) y el **calendario completo** de la temporada (ADR-029) | `match_stats.xg`, `matches` |
 | [ClubElo](http://clubelo.com) | Rating **Elo** histórico por club | `elo` |
 
 Cobertura: temporadas **2018-19 → 2025-26** (≈ 3.040 partidos). Las
@@ -240,12 +242,120 @@ uv run streamlit run app/dashboard.py
 Panel interactivo (SPEC §9, ADR-025) con seis páginas: **próxima jornada**
 (predicción del Alavés + resto de la jornada), **clasificación proyectada**
 (tabla con P de cada zona + heatmap de distribución de posiciones), **el Alavés
-en detalle** (Elo, xG a favor/en contra y forma por jornada), **explicabilidad**
-(SHAP global + waterfall por partido), **rendimiento del modelo** (registro de
-versiones e historial de predicciones) y **registro de decisiones** (los ADRs).
-Toda la lógica está en `dashboard/data.py` (con tests); `app/dashboard.py` solo
-pinta. Las páginas de predicción y proyección funcionan en modo demo sobre
-temporadas históricas hasta que la F7 ingiera el calendario 2026-27.
+en detalle** (recorrido de lo jugado —resultados, puntos, goles y xG— más Elo,
+xG y forma por jornada), **explicabilidad** (SHAP global + waterfall por
+partido), **rendimiento del modelo** (registro de versiones e historial de
+predicciones) y **registro de decisiones** (los ADRs). Toda la lógica está en
+`dashboard/data.py` (con tests); `app/dashboard.py` solo pinta. Con la 2026-27
+en curso, las páginas de predicción y proyección trabajan sobre datos reales
+(jugado vs. programado); sobre temporadas ya cerradas siguen ofreciendo el modo
+demo, que proyecta desde la jornada que elijas.
+
+## Modo temporada (F7)
+
+Durante la 2026-27, un solo comando semanal ejecuta el ciclo completo
+(`etl/ingest.py`, `evaluation/season.py`, ADR-026):
+
+```bash
+uv run alaves ingest --matchday
+```
+
+1. **Ingiere** la temporada en curso: resultados nuevos y cuotas
+   (football-data), xG (FBref/Understat), el **calendario** de próximos
+   partidos (`fixtures.csv`) y el Elo reciente. Cada fuente que falle degrada
+   con aviso, no rompe el ciclo.
+2. **Evalúa** las predicciones ya persistidas cuyo resultado se conoce
+   (log-loss/acierto acumulados de la temporada — la auditoría honesta del
+   rendimiento real, distinta del backtest).
+3. **Reentrena** con toda la historia + lo nuevo y registra la versión.
+4. **Predice** la próxima jornada y persiste las predicciones antes de jugarse.
+5. **Simula** la clasificación proyectada actualizada.
+
+El calendario sale de football-data y no de API-Football (ADR-026): lo único
+que se necesita es la lista de próximos partidos, y las alineaciones/lesiones
+de API-Football no están en el feature set v1 — no compensan su API key ni su
+límite de 100 peticiones/día.
+
+### De dónde sale el calendario (ADR-029)
+
+Ningún origen tiene el calendario completo *y* todo lo que hace falta, así que
+`ingest_fixtures` los **fusiona campo a campo** en este orden de preferencia:
+
+| Orden | Origen | Qué aporta que los demás no |
+|-------|--------|------------------------------|
+| 1 | football-data `fixtures.csv` | **cuotas de apertura** (variante `con_cuotas`) |
+| 2 | FBref *Scores & Fixtures* | **jornada oficial (Wk)** |
+| 3 | Understat `getLeagueData` | **la temporada entera**, desde el primer día |
+| 4 | `data/fixtures.csv` local | último recurso manual |
+
+La fecha la fija el primer origen que traiga el partido; la jornada y las cuotas,
+el primero que las tenga. Como FBref y Understat ya se descargan para el xG, el
+calendario no cuesta peticiones nuevas. Y si todos los partidos traen jornada
+oficial, la deducción por proximidad de fechas ni se ejecuta.
+
+> **Siembra manual (ya no hace falta, pero sigue ahí)**: si los tres orígenes
+> fallan, crea `data/fixtures.csv` (formato football-data) y `alaves ingest
+> --matchday` lo recogerá:
+>
+> ```csv
+> Div,Date,Time,HomeTeam,AwayTeam
+> SP1,16/08/2026,21:00,Alaves,Getafe
+> SP1,16/08/2026,18:30,Sevilla,Valencia
+> ```
+>
+> Cuando football-data publique la temporada, sus fechas mandan sobre las de la
+> siembra local para los mismos partidos (ADR-027), así que puedes dejar el
+> archivo donde está o borrarlo: en cuanto el remoto trae la liga, el local ya
+> no aporta nada.
+
+### Con la temporada ya empezada
+
+La 2026-27 está en marcha, así que la BD contiene por primera vez una temporada
+**empezada y sin terminar**. Eso cambia varias cosas (ADR-027):
+
+- Lo jugado de la temporada en curso **sí entrena** el modelo desde la primera
+  jornada, y **sí** entra al pool de calibración y de pesos del apilado.
+- Pero **no se usa para juzgar**: las métricas de validación se siguen midiendo
+  sobre la última temporada completa (380 partidos), porque de ese log-loss
+  depende la regla anti-sorpresa que decide si una versión se promociona. Con 30
+  partidos esa decisión sería puro ruido. Por la misma razón, `alaves backtest`
+  no la usa como temporada de test.
+- El rendimiento *real* de esta temporada se ve en otro sitio: `evaluate_season`
+  cruza las predicciones que se guardaron **antes** de cada partido con el
+  resultado que luego ocurrió, y sale en el ciclo semanal y en la página
+  "Rendimiento del modelo" del dashboard.
+- `alaves validate` valida ahora también la temporada en curso, con reglas
+  propias (no le exige 380 partidos): jornadas correlativas sin huecos, jornada
+  asignada también a los partidos programados, xG y cuotas de lo jugado, y que
+  ninguna predicción guardada tenga fecha posterior a su partido.
+- `alaves status` separa jugados de programados y resume dónde va la temporada.
+
+> **Equipos ascendidos**: football-data escribe los nombres a su manera y la
+> ingesta falla ruidosamente ante uno no registrado (ADR-005) — es a propósito:
+> un `team_id` inventado por el pipeline ensuciaría el histórico. El aviso lista
+> **todos** los nombres desconocidos de una vez (ADR-028), así que se arreglan
+> en una sola pasada añadiendo su bloque a `config/teams.toml`:
+>
+> ```toml
+> [malaga]
+> name = "Málaga CF"
+> football_data = "Malaga"
+> fbref = ["Málaga", "Malaga CF"]
+> understat = "Malaga"
+> clubelo = "Malaga"
+> ```
+>
+> Ojo: mientras un equipo no esté registrado **no entra nada** de la temporada
+> (ni resultados, ni xG, ni cuotas), porque la ingesta aborta antes de insertar.
+
+Rutina semanal, después de cada jornada:
+
+```bash
+uv run alaves ingest --matchday   # ciclo completo (ingesta → ... → simula)
+uv run alaves validate            # certifica también la temporada en curso
+uv run alaves status              # jornadas jugadas, próxima jornada, predicciones
+uv run streamlit run app/dashboard.py
+```
 
 ## Estructura del repositorio
 
@@ -282,7 +392,7 @@ temporadas históricas hasta que la F7 ingiera el calendario 2026-27.
 │           ├── understat.py          # xG de relleno vía API interna (ADR-011)
 │           └── clubelo.py
 ├── app/dashboard.py                  # dashboard Streamlit (solo presentación)
-└── tests/                            # 139 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 182 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)
@@ -314,6 +424,10 @@ temporadas históricas hasta que la F7 ingiera el calendario 2026-27.
 | [023](docs/decisions/023-simulador-monte-carlo.md) | Simulador Monte Carlo de la clasificación: muestreo del 1X2 + DG del Dixon-Coles, zonas parametrizadas, modo demo |
 | [024](docs/decisions/024-explicabilidad-shap-nativo-y-ablation.md) | Explicabilidad con TreeSHAP nativo de LightGBM (evita la librería `shap`/`numba`) + ablation study por bloques |
 | [025](docs/decisions/025-dashboard-streamlit.md) | Dashboard Streamlit con lógica testeable en `src/` y presentación fina en `app/`; proyección compartida con el CLI |
+| [026](docs/decisions/026-modo-temporada-y-calendario.md) | Modo temporada (F7): ciclo post-jornada y calendario vía fixtures.csv de football-data (API-Football diferida) |
+| [027](docs/decisions/027-temporada-en-curso-a-medias.md) | La temporada en curso entrena pero no juzga: validación y backtest sobre temporadas completas, validación propia de la BD, el calendario remoto manda sobre la siembra local |
+| [028](docs/decisions/028-fallos-visibles-en-la-ingesta-semanal.md) | La ingesta semanal falla a la cara: todos los equipos sin alias de una vez, causa exacta del fallo y ningún calendario vacío sin explicación |
+| [029](docs/decisions/029-calendario-de-fbref-y-understat.md) | El calendario se obtiene solo fusionando football-data (cuotas) + FBref (jornada oficial) + Understat (temporada entera); URL de FBref sin año para la temporada en curso |\n| [030](docs/decisions/030-fuentes-caidas-con-motivo.md) | Una fuente caída degrada y dice por qué: se conserva el motivo, se resume la forma del fallo y el parseo también degrada |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 
@@ -325,10 +439,16 @@ temporadas históricas hasta que la F7 ingiera el calendario 2026-27.
 - **Honestidad estadística**: el objetivo es batir baselines y acercarse a las
   cuotas de mercado, no "acertar todo".
 
-## Próximos pasos
+## Estado y siguiente paso real
 
-1. **F7** (última fase): modo temporada — ingesta post-jornada
-   (`alaves ingest --matchday N`) con el calendario 2026-27 real de
-   API-Football, reentrenamiento semanal y evaluación de las predicciones
-   ya persistidas. Activa por completo `predict`/`simulate` y las páginas de
-   próxima jornada y clasificación proyectada del dashboard.
+Las **siete fases del proyecto están completas** (F1–F7) y la temporada 2026-27
+ya está en marcha. El ciclo semanal es `alaves ingest --matchday` (ingesta →
+evalúa → reentrena → predice → simula); el sistema trata la temporada en curso
+como lo que es, una temporada a medias que entrena pero todavía no juzga
+(ADR-027).
+
+Mejoras incrementales posibles (cada una con su ADR): materializar el bloque
+técnico-táctico de FBref si se abre una vía de acceso estable (aplazado en
+ADR-012), añadir API-Football para lesiones/alineaciones con su bloque de
+features (ADR-026), y búsqueda de hiperparámetros del LightGBM con optuna
+(ADR-016) si el backtest lo justifica.

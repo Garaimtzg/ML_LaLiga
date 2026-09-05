@@ -229,3 +229,10 @@ football_data = "La Coruna"
 fbref = ["La Coruña", "Deportivo La Coruña", "Dep La Coruña"]
 understat = "Deportivo La Coruna"
 clubelo = "Depor"
+
+[malaga]
+name = "Málaga CF"
+football_data = "Malaga"
+fbref = ["Málaga", "Malaga CF"]
+understat = "Malaga"
+clubelo = "Malaga"

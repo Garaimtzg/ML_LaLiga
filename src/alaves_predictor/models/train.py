@@ -40,7 +40,7 @@ from sklearn.isotonic import IsotonicRegression
 
 from alaves_predictor.config import Settings
 from alaves_predictor.evaluation import metrics
-from alaves_predictor.features.build import MARKET_COLS, feature_columns
+from alaves_predictor.features.build import MARKET_COLS, feature_columns, in_progress_seasons
 from alaves_predictor.models import calibration, dixon_coles, ensemble, gbm_classifier, linear
 from alaves_predictor.models.gbm_classifier import (
     VARIANT_NO_ODDS,
@@ -212,10 +212,18 @@ def season_walkforward(
 
 
 def _choose_by_loss(preds: list[SeasonPredictions], attr: str) -> float:
-    """Candidato (xi o C) con mejor log-loss medio sobre el pool walk-forward."""
+    """Candidato (xi o C) con mejor log-loss sobre el pool walk-forward completo.
+
+    El log-loss se mide sobre TODOS los partidos del pool a la vez, no como
+    media de las medias por temporada: así cada partido pesa lo mismo. Con
+    temporadas cerradas (380 partidos cada una) ambas cuentas coinciden, pero
+    con la temporada en curso en el pool (30 partidos jugados) la media de
+    medias le daría el mismo voto que a una entera (ADR-027).
+    """
     by_candidate: dict[float, np.ndarray] = getattr(preds[0], attr)
+    y_true = [y for p in preds for y in p.y_true]
     losses = {
-        cand: float(np.mean([metrics.log_loss(p.y_true, getattr(p, attr)[cand]) for p in preds]))
+        cand: metrics.log_loss(y_true, np.vstack([getattr(p, attr)[cand] for p in preds]))
         for cand in by_candidate
     }
     return min(losses, key=losses.get)  # type: ignore[arg-type]
@@ -305,18 +313,28 @@ def train_models(
     """Entrena el sistema completo sobre partidos jugados. Ver flujo en el docstring."""
     finished = features[features["result"].notna()].copy()
     seasons = sorted(set(finished["season"]))
-    if len(seasons) < 2:
+    # Una temporada arrancada pero sin terminar entrena y calibra como las
+    # demás, pero no puede ser la temporada de validación: 30 partidos no
+    # sostienen una métrica ni la regla anti-sorpresa del registry (ADR-027).
+    partial = in_progress_seasons(features, settings)
+    complete = [s for s in seasons if s not in partial]
+    if len(complete) < 2:
+        en_curso = ", ".join(sorted(partial)) if partial else "ninguna"
         raise ValueError(
-            "Se necesitan al menos 2 temporadas para entrenar con validación temporal "
-            f"(hay {len(seasons)}). Ejecuta `alaves ingest --historical` primero."
+            "Se necesitan al menos 2 temporadas completas para entrenar con validación "
+            f"temporal (hay {len(complete)}; en curso: {en_curso}). "
+            "Ejecuta `alaves ingest --historical` primero."
         )
     step = settings.models.ensemble.weight_grid_step
     default_xi = settings.models.dixon_coles.xi_candidates()[0]
     default_c = settings.models.linear.c_candidates()[0]
     oof = season_walkforward(finished, settings, variants)
 
-    # --- métricas de validación: última temporada, sin verse a sí misma ---
-    val, prior = oof[-1], oof[:-1]
+    # --- métricas de validación: última temporada COMPLETA, sin verse a sí misma ---
+    # `prior` son los folds ANTERIORES a ella (nunca los posteriores, que
+    # incluirían la temporada en curso y contaminarían la validación).
+    val_idx = max(i for i, p in enumerate(oof) if p.season not in partial)
+    val, prior = oof[val_idx], oof[:val_idx]
     xi_val = choose_xi(prior) if prior else default_xi
     c_val = choose_c(prior) if prior else default_c
     # valores: dicts de métricas por modelo, salvo "xi"/"c" (candidatos elegidos)
@@ -324,6 +342,8 @@ def train_models(
         "dixon_coles": metrics.evaluate(val.y_true, val.dc_by_xi[xi_val]),
         "xi": xi_val,
         "c": c_val,
+        # queda escrito en metrics.json qué temporadas entraron a medias
+        "seasons_in_progress": sorted(partial),
     }
     for variant in variants:
         comps_val = _component_arrays(val, variant, xi_val, c_val)
