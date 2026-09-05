@@ -724,3 +724,70 @@ def test_una_respuesta_vacia_de_clubelo_tampoco_aborta(mini_db, mini_settings, m
     rows, unavailable = ingest_clubelo(mini_db, mini_settings, registry)
     assert set(unavailable) == set(registry.team_ids)
     assert all(rows[t] == 0 for t in registry.team_ids)
+
+
+def test_los_programados_no_heredan_la_aproximacion_de_los_jugados(mini_db, mini_settings):
+    """Regresión del caso real: `assign_matchdays` numeraba también los programados.
+
+    Con jornada puesta en TODOS los programados, `assign_scheduled_matchdays`
+    se salía sin hacer nada (su guarda es "todos traen jornada oficial"), así
+    que el calendario futuro salía de la aproximación por conteo — que para
+    partidos no jugados no significa nada. En la BD real produjo jornadas
+    programadas de 8 y de 11 (ADR-030).
+    """
+    from alaves_predictor.etl.ingest import assign_matchdays, assign_scheduled_matchdays
+
+    mini_settings.league.teams_per_season = 4  # 2 partidos por jornada
+    TeamRegistry(mini_settings.teams).seed_db(mini_db)
+    season = mini_settings.current_season
+    now = datetime.now(UTC).isoformat()
+    a, b, c, d = list(mini_settings.teams)
+    # J1 jugada entera, J2 con un partido adelantado y otro por jugar, J3 entera
+    calendario = [
+        ("2026-09-11", a, b, True),
+        ("2026-09-12", c, d, True),
+        ("2026-09-18", b, a, True),  # adelantado de la J2
+        ("2026-09-20", d, c, False),
+        ("2026-09-26", a, c, False),
+        ("2026-09-27", b, d, False),
+    ]
+    for fecha, home, away, jugado in calendario:
+        db.upsert(
+            mini_db,
+            "matches",
+            {
+                "match_id": f"{season}_{home}_{away}",
+                "season": season,
+                "matchday": None,
+                "date": fecha,
+                "home_id": home,
+                "away_id": away,
+                "home_goals": 1 if jugado else None,
+                "away_goals": 0 if jugado else None,
+                "status": "finished" if jugado else "scheduled",
+                "source": "test",
+                "fetched_at": now,
+            },
+            key_cols=["match_id"],
+        )
+    mini_db.commit()
+
+    assign_matchdays(mini_db, season)
+    # no toca los programados: siguen sin jornada, listos para la agrupación buena
+    sin_jornada = mini_db.execute(
+        "SELECT COUNT(*) AS n FROM matches WHERE season = ? AND status = 'scheduled' "
+        "AND matchday IS NULL",
+        (season,),
+    ).fetchone()["n"]
+    assert sin_jornada == 3
+
+    assign_scheduled_matchdays(mini_db, season, mini_settings.league.matches_per_round)
+    por_jornada = dict(
+        mini_db.execute(
+            "SELECT matchday, COUNT(*) n FROM matches WHERE season = ? GROUP BY matchday "
+            "ORDER BY matchday",
+            (season,),
+        ).fetchall()
+    )
+    # La J2 tenía 1 jugado: el primer programado la COMPLETA en vez de abrir la J3.
+    assert por_jornada == {1: 2, 2: 2, 3: 2}

@@ -52,14 +52,21 @@ def make_match_id(season: str, home_id: str, away_id: str) -> str:
 
 
 def assign_matchdays(conn: sqlite3.Connection, season: str) -> None:
-    """Asigna jornada aproximada a los partidos de una temporada (ADR-006).
+    """Asigna jornada aproximada a los partidos JUGADOS de una temporada (ADR-006).
 
     football-data no publica la jornada oficial. Aproximación: ordenados por
     fecha, el partido N de un equipo pertenece a su jornada N; se toma
     max(nº de partido del local, nº del visitante) para absorber aplazamientos.
+
+    Solo partidos jugados. Sin el filtro de estado también numeraba los
+    programados, y eso dejaba a `assign_scheduled_matchdays` sin nada que hacer
+    (se sale si todos traen jornada): la agrupación buena no llegaba a
+    ejecutarse nunca y las jornadas futuras salían de esta aproximación, que
+    para lo no jugado no tiene ningún sentido (ADR-030).
     """
     rows = conn.execute(
-        "SELECT match_id, home_id, away_id FROM matches WHERE season = ? ORDER BY date, match_id",
+        "SELECT match_id, home_id, away_id FROM matches "
+        "WHERE season = ? AND status = 'finished' ORDER BY date, match_id",
         (season,),
     ).fetchall()
     played: dict[str, int] = {}
@@ -109,16 +116,29 @@ def assign_scheduled_matchdays(
         ).fetchone()["m"]
         or 0
     )
-    matchday = max_finished + 1
-    in_round = 0
+    # La jornada en curso puede estar a medias (un partido adelantado al viernes
+    # y el resto por jugar): los primeros programados COMPLETAN esa jornada en
+    # vez de abrir la siguiente. Sin esto, todo el calendario iba desplazado una
+    # jornada en cuanto se adelantaba un partido.
+    ya_jugados = conn.execute(
+        "SELECT COUNT(*) AS n FROM matches WHERE season = ? AND status = 'finished' "
+        "AND matchday = ?",
+        (season, max_finished),
+    ).fetchone()["n"]
+    if max_finished == 0 or ya_jugados >= matches_per_round:
+        # Nada jugado aún, o la última jornada está completa: se abre la siguiente.
+        matchday, quedan = max_finished + 1, matches_per_round
+    else:
+        matchday, quedan = max_finished, matches_per_round - ya_jugados
+
     for row in rows:
-        if in_round == matches_per_round:
+        if quedan == 0:
             matchday += 1
-            in_round = 0
+            quedan = matches_per_round
         conn.execute(
             "UPDATE matches SET matchday = ? WHERE match_id = ?", (matchday, row["match_id"])
         )
-        in_round += 1
+        quedan -= 1
     conn.commit()
 
 

@@ -55,6 +55,45 @@ cierre del puerto 80. Es una hipótesis, no una comprobación: el entorno de
 desarrollo no tiene red a la fuente (ADR-007). El motivo real lo dirá el propio
 aviso en la siguiente ejecución, que es exactamente el punto de este ADR.
 
+## Añadido: las jornadas del calendario no se agrupaban
+
+Los datos de la BD real destaparon que la agrupación de jornadas de ADR-029 no
+llegaba a ejecutarse nunca:
+
+```
+finished|1|8    scheduled|4|8
+finished|2|12   scheduled|5|10
+finished|3|10   scheduled|6|11
+finished|4|1    scheduled|7|10
+```
+
+Una jornada de LaLiga tiene 10. Con bloques de 10 no puede salir un 11: la
+prueba de que `assign_scheduled_matchdays` se estaba saliendo sin tocar nada.
+
+**Causa.** `assign_matchdays` (la aproximación por conteo de ADR-006, pensada
+para partidos jugados) no filtraba por estado, así que numeraba **también los
+programados**. Después `assign_scheduled_matchdays` los encontraba todos con
+jornada y se salía por su guarda de "todos traen jornada oficial". El calendario
+futuro salía de una aproximación que para partidos no jugados no significa nada.
+
+**Arreglos.**
+
+1. `assign_matchdays` solo toca partidos `finished`.
+2. La primera jornada programada **completa la jornada en curso** en vez de
+   abrir la siguiente. Con un partido de la J4 adelantado al viernes, los 9
+   restantes son J4, no J5; sin esto, todo el calendario iba desplazado.
+3. `validate` gana un chequeo de **partidos por jornada**, que es el que caza
+   esta clase de fallo de un vistazo.
+
+**Lo que NO se arregla, y hay que decirlo.** Las jornadas de lo ya jugado
+(8/12/10 arriba) siguen mal: son la aproximación de ADR-006 y los aplazamientos
+la descuadran — dos partidos de la J1 jugados después de la J2 de sus equipos
+cuentan como J2. Sin la Wk oficial no hay heurística que lo resuelva: agrupar
+por fechas falla con las jornadas entre semana y por conteo falla con los
+aplazamientos. Es el coste concreto de tener FBref inalcanzable, y por eso el
+chequeo nuevo informa de ello sin tumbar la validación: no es un fallo que el
+usuario pueda arreglar.
+
 ## Consecuencias
 
 - Un aviso de fuente caída ahora se puede accionar: dice qué falló, con qué

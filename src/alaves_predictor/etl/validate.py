@@ -122,6 +122,35 @@ def _current_season_checks(conn: sqlite3.Connection, settings: Settings) -> list
         )
     )
 
+    # Cada jornada debe tener n/2 encuentros. Es el chequeo que caza de golpe
+    # los fallos de agrupación del calendario (una jornada de 8 y otra de 11):
+    # la última se salta, porque puede estar incompleta si falta calendario.
+    por_jornada = conn.execute(
+        "SELECT matchday, COUNT(*) AS n FROM matches WHERE season = ? AND matchday IS NOT NULL "
+        "GROUP BY matchday ORDER BY matchday",
+        (season,),
+    ).fetchall()
+    malas = [
+        (r["matchday"], r["n"]) for r in por_jornada[:-1] if r["n"] != league.matches_per_round
+    ]
+    # Las jornadas de lo ya jugado salen de una aproximación (ADR-006) que los
+    # aplazamientos descuadran, y sin la Wk oficial de FBref no hay forma de
+    # arreglarlas: se informan, pero no tumban la validación.
+    max_jugada = conn.execute(
+        "SELECT MAX(matchday) AS m FROM matches WHERE season = ? AND status = 'finished'",
+        (season,),
+    ).fetchone()["m"]
+    futuras = [(md, n) for md, n in malas if max_jugada is None or md > max_jugada]
+    detalle = (
+        f"todas con {league.matches_per_round}"
+        if not malas
+        else ", ".join(f"J{md}={n}" for md, n in malas)
+    )
+    if malas and not futuras:
+        detalle += " (jornadas ya jugadas: aproximación de ADR-006 descuadrada por "
+        detalle += "aplazamientos; se corrige sola cuando FBref aporte la Wk oficial)"
+    results.append(_check(f"{prefix} partidos por jornada", not futuras, detalle))
+
     if played:
         xg_rows = conn.execute(
             "SELECT COUNT(*) AS n FROM match_stats ms JOIN matches m ON m.match_id = ms.match_id "
