@@ -55,7 +55,7 @@ cd ~ && mkdir -p proyectos && cd proyectos
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (176 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (178 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
@@ -391,7 +391,7 @@ uv run streamlit run app/dashboard.py
 │           ├── understat.py          # xG de relleno vía API interna (ADR-011)
 │           └── clubelo.py
 ├── app/dashboard.py                  # dashboard Streamlit (solo presentación)
-└── tests/                            # 176 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 178 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)
@@ -426,7 +426,7 @@ uv run streamlit run app/dashboard.py
 | [026](docs/decisions/026-modo-temporada-y-calendario.md) | Modo temporada (F7): ciclo post-jornada y calendario vía fixtures.csv de football-data (API-Football diferida) |
 | [027](docs/decisions/027-temporada-en-curso-a-medias.md) | La temporada en curso entrena pero no juzga: validación y backtest sobre temporadas completas, validación propia de la BD, el calendario remoto manda sobre la siembra local |
 | [028](docs/decisions/028-fallos-visibles-en-la-ingesta-semanal.md) | La ingesta semanal falla a la cara: todos los equipos sin alias de una vez, causa exacta del fallo y ningún calendario vacío sin explicación |
-| [029](docs/decisions/029-calendario-de-fbref-y-understat.md) | El calendario se obtiene solo fusionando football-data (cuotas) + FBref (jornada oficial) + Understat (temporada entera); URL de FBref sin año para la temporada en curso |
+| [029](docs/decisions/029-calendario-de-fbref-y-understat.md) | El calendario se obtiene solo fusionando football-data (cuotas) + FBref (jornada oficial) + Understat (temporada entera); URL de FBref sin año para la temporada en curso |\n| [030](docs/decisions/030-fuentes-caidas-con-motivo.md) | Una fuente caída degrada y dice por qué: se conserva el motivo, se resume la forma del fallo y el parseo también degrada |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 

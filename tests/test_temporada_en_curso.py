@@ -678,3 +678,49 @@ def test_fbref_caido_es_aviso_si_deja_un_hueco(mini_db, mini_settings, monkeypat
 
     assert report.xg_coverage < report.finished
     assert any("FBref" in w and "SÍ hace falta" in w for w in report.warnings)
+
+
+# --- ClubElo caído: por qué, y que no tumbe nada (ADR-030) -------------------
+
+
+def test_clubelo_caido_conserva_el_motivo_y_no_tumba_el_ciclo(
+    mini_db, mini_settings, monkeypatch, tmp_path
+):
+    """ "No responde" sin motivo no es diagnosticable, y una fuente caída no aborta."""
+    from alaves_predictor.etl.errors import SourceDownloadError
+    from alaves_predictor.etl.ingest import ingest_matchday
+
+    _sin_calendario_local(mini_settings, tmp_path)
+    fixtures_dir = Path(__file__).parent / "fixtures"
+
+    def _fetch(url, cache_path, **kwargs):
+        if "elo.test" in url:
+            raise SourceDownloadError(f"HTTP 404 al descargar {url}: la URL ya no existe")
+        if "fd.test" in url:
+            return (fixtures_dir / "football_data_mini.csv").read_text()
+        if "us.test" in url:
+            return (fixtures_dir / "understat_league_mini.json").read_text()
+        raise SourceDownloadError(f"no simulado: {url}")
+
+    monkeypatch.setattr("alaves_predictor.etl.ingest.fetch_text", _fetch)
+    report = ingest_matchday(mini_db, mini_settings)  # no lanza: degrada
+
+    elo_lineas = [m for m in report.notes + report.warnings if "ClubElo" in m]
+    assert len(elo_lineas) == 1
+    assert "HTTP 404" in elo_lineas[0]  # el motivo llega al usuario
+    # falla la fuente entera, no un alias suelto: se dice así en vez de listar 4
+    assert "la fuente entera" in elo_lineas[0]
+
+
+def test_una_respuesta_vacia_de_clubelo_tampoco_aborta(mini_db, mini_settings, monkeypatch):
+    """Antes SourceFormatError no se capturaba y mataba la ingesta entera."""
+    from alaves_predictor.etl.ingest import ingest_clubelo
+
+    monkeypatch.setattr("alaves_predictor.etl.ingest.fetch_text", lambda *a, **k: "   ")
+    registry = TeamRegistry(mini_settings.teams)
+    registry.seed_db(mini_db)
+
+    # texto en blanco -> el parser de ClubElo protesta; debe degradar, no abortar
+    rows, unavailable = ingest_clubelo(mini_db, mini_settings, registry)
+    assert set(unavailable) == set(registry.team_ids)
+    assert all(rows[t] == 0 for t in registry.team_ids)

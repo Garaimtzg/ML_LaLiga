@@ -576,7 +576,7 @@ def ingest_clubelo(
     registry: TeamRegistry,
     *,
     force: bool = False,
-) -> tuple[dict[str, int], list[str]]:
+) -> tuple[dict[str, int], dict[str, str]]:
     """Carga el histórico Elo de cada equipo del registro.
 
     Resiliencia (la BD manda, como en el xG):
@@ -585,13 +585,15 @@ def ingest_clubelo(
       ingesta no muere por una fuente caída; `alaves validate` sigue siendo
       el juez de si falta algo que importe.
 
-    Devuelve (filas en BD por equipo, equipos no descargables en esta pasada).
+    Devuelve (filas en BD por equipo, equipos no descargables -> motivo). El
+    motivo se conserva: sin él, "ClubElo no responde" no dice si es un 404, un
+    bloqueo o un corte de red, y no hay por dónde empezar a mirar (ADR-030).
     """
     cfg = settings.sources.clubelo
     history_start = date.fromisoformat(cfg.history_start)
     now = datetime.now(UTC).isoformat()
     rows_by_team: dict[str, int] = {}
-    unavailable: list[str] = []
+    unavailable: dict[str, str] = {}
 
     for team_id in registry.team_ids:
         existing = conn.execute(
@@ -606,11 +608,14 @@ def ingest_clubelo(
         cache = settings.data.raw_dir / "clubelo" / f"{alias}.csv"
         try:
             text = fetch_text(url, cache, rate_limit_seconds=cfg.rate_limit_seconds, force=force)
-        except SourceDownloadError:
-            unavailable.append(team_id)
+            # El parseo va DENTRO: si ClubElo responde algo que no es su CSV
+            # (portada de error, redirect servido como HTML), eso es la fuente
+            # caída, no un fallo del pipeline. La BD manda (ADR-030).
+            ratings = clubelo.parse_csv(text, alias)
+        except (SourceDownloadError, SourceFormatError) as exc:
+            unavailable[team_id] = str(exc)
             rows_by_team[team_id] = existing
             continue
-        ratings = clubelo.parse_csv(text, alias)
         inserted = 0
         for rating in ratings:
             if rating.valid_from < history_start:
@@ -915,6 +920,15 @@ class MatchdayReport:
     notes: list[str] = field(default_factory=list)
 
 
+def _describe_teams(team_ids: list[str], total: int) -> str:
+    """'los 31 equipos' / 'malaga' / '3 equipos (a, b, c)', según cuántos sean."""
+    if len(team_ids) == total:
+        return f"los {total} equipos (la fuente entera, no un alias suelto)"
+    if len(team_ids) <= 3:
+        return ", ".join(team_ids)
+    return f"{len(team_ids)} equipos ({', '.join(team_ids[:3])}...)"
+
+
 def ingest_matchday(
     conn: sqlite3.Connection, settings: Settings, *, force: bool = True
 ) -> MatchdayReport:
@@ -1023,20 +1037,21 @@ def ingest_matchday(
     # 4. Elo reciente de ClubElo (force: queremos el rating más actual).
     elo_rows, elo_unavailable = ingest_clubelo(conn, settings, registry, force=force)
     if elo_unavailable:
-        # Distinguir "no se ha podido refrescar" de "no tiene ningún Elo": lo
-        # segundo sí afecta a las predicciones de ese equipo (un ascendido
-        # recién dado de alta), y decir "conserva el Elo en BD" sería falso.
         sin_datos = [t for t in elo_unavailable if not elo_rows.get(t)]
-        detail = f"ClubElo no responde para: {', '.join(elo_unavailable)}."
+        # Con 31 equipos, listarlos todos llena la pantalla y esconde el motivo,
+        # que es lo único accionable. Si falla la fuente entera se dice así.
+        equipos = _describe_teams(list(elo_unavailable), len(registry.team_ids))
+        motivo = next(iter(elo_unavailable.values()))
+        detail = f"ClubElo no responde para {equipos}. Motivo: {motivo}"
         if sin_datos:
-            detail += (
-                f" ATENCIÓN: {', '.join(sin_datos)} no tiene(n) NINGÚN Elo en la BD; sus "
-                "features de Elo van vacías. Revisa su alias 'clubelo' en config/teams.toml "
-                "(es el componente de la URL de api.clubelo.com)."
+            report.warnings.append(
+                detail + f" ATENCIÓN: {', '.join(sin_datos)} no tiene(n) NINGÚN Elo en la BD; sus "
+                "features de Elo van vacías."
             )
         else:
-            detail += " (Todos conservan su Elo ya almacenado en la BD.)"
-        report.warnings.append(detail)
+            # Nada que hacer: el Elo cambia poco de una semana a otra y el
+            # almacenado sigue sirviendo. Es una nota, no un aviso.
+            report.notes.append(detail + " Todos conservan su Elo ya almacenado en la BD.")
     return report
 
 
@@ -1080,7 +1095,8 @@ def ingest_historical(
     report.elo_rows_by_team, elo_unavailable = ingest_clubelo(conn, settings, registry, force=force)
     if elo_unavailable:
         sin_datos = [t for t in elo_unavailable if not report.elo_rows_by_team.get(t)]
-        detail = ", ".join(elo_unavailable)
+        detail = _describe_teams(list(elo_unavailable), len(registry.team_ids))
+        detail += f" (motivo: {next(iter(elo_unavailable.values()))})"
         report.warnings.append(
             f"ClubElo no responde para: {detail}. Se reintentará en la próxima ingesta."
             + (
