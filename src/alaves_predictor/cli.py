@@ -219,6 +219,74 @@ def _predict_and_simulate_next(conn, settings, bundle, features) -> None:
 
 
 @app.command()
+def sources() -> None:
+    """Prueba cada fuente de datos y dice qué responde (diagnóstico de red).
+
+    Cuando una fuente falla, el ciclo semanal degrada y sigue — que es lo que
+    debe hacer, pero deja la pregunta "¿y por qué?" sin responder del todo.
+    Este comando la contesta: pide una URL representativa de cada fuente, sin
+    cache, y muestra el resultado y lo que tardó.
+    """
+    import time
+
+    from alaves_predictor.etl.errors import ETLError
+    from alaves_predictor.etl.http_cache import fetch_text
+    from alaves_predictor.etl.sources import clubelo, fbref, football_data, understat
+
+    settings = _load_settings()
+    season = settings.current_season
+    fd, fb, us, ce = (
+        settings.sources.football_data,
+        settings.sources.fbref,
+        settings.sources.understat,
+        settings.sources.clubelo,
+    )
+    focus_alias = settings.teams[settings.focus_team].aliases_for("clubelo")[0]
+
+    # (etiqueta, url, kwargs de fetch_text). El orden es el del ciclo semanal.
+    probes: list[tuple[str, str, dict]] = [
+        ("football-data resultados", football_data.csv_url(season, fd), {"encoding": "latin-1"}),
+        ("football-data calendario", football_data.fixtures_url(fd), {}),
+        ("fbref (URL sin año)", fbref.current_schedule_url(fb), {"impersonate": True}),
+        ("fbref (URL versionada)", fbref.schedule_url(season, fb), {"impersonate": True}),
+        (
+            "understat xG + calendario",
+            understat.league_data_url(season, us),
+            {"headers": understat.api_headers(season, us)},
+        ),
+        ("clubelo (equipo foco)", clubelo.club_url(focus_alias, ce), {}),
+    ]
+
+    typer.secho(f"Probando las fuentes de datos ({season}):", bold=True)
+    caidas = 0
+    tmp = settings.data.raw_dir / "_diagnostico"
+    for label, url, kwargs in probes:
+        started = time.monotonic()
+        try:
+            text = fetch_text(url, tmp / "probe.tmp", rate_limit_seconds=0.0, force=True, **kwargs)
+            estado, color, detalle = "OK", typer.colors.GREEN, f"{len(text):,} bytes"
+        except ETLError as exc:
+            caidas += 1
+            estado, color, detalle = "FALLA", typer.colors.RED, str(exc)
+        typer.secho(f"  {estado:6s} {label}  ({time.monotonic() - started:.1f} s)", fg=color)
+        typer.echo(f"         {url}")
+        typer.echo(f"         {detalle}")
+    if tmp.exists():
+        for leftover in tmp.iterdir():
+            leftover.unlink()
+        tmp.rmdir()
+
+    if caidas:
+        typer.secho(
+            f"{caidas} fuente(s) sin responder. El ciclo semanal sigue funcionando "
+            "mientras otra cubra el mismo dato (ADR-029/030).",
+            fg=typer.colors.YELLOW,
+        )
+    else:
+        typer.secho("Todas las fuentes responden.", fg=typer.colors.GREEN, bold=True)
+
+
+@app.command()
 def status() -> None:
     """Muestra el nº de filas por tabla y partidos por temporada."""
     settings = _load_settings()

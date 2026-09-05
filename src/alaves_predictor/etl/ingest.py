@@ -309,6 +309,11 @@ def _xg_coverage(conn: sqlite3.Connection, season: str) -> int:
     ).fetchone()["n"]
 
 
+# Etiqueta de procedencia cuando el calendario sale de una página guardada a
+# mano: no es FBref en vivo, y conviene que el aviso lo diga.
+_FBREF_SOURCE_MANUAL = "fbref-cache-manual"
+
+
 def _fbref_schedule_cache(season: str, settings: Settings) -> Path:
     return settings.data.raw_dir / "fbref" / f"schedule_{fbref.season_slug(season)}.html"
 
@@ -411,6 +416,17 @@ def _fetch_fbref_schedule(
     attempts.append(
         f"  - Wayback Machine (snapshots probados: {len(candidates[:8])})\n      -> {last_error}"
     )
+
+    # Último recurso: la cache, INCLUSO con force. El mensaje de error propone
+    # guardar la página a mano en `cache`, pero el ciclo semanal fuerza la
+    # descarga, así que ese arreglo manual no llegaba a usarse nunca. Un
+    # snapshot guardado a mano es mejor que nada (ADR-030).
+    if cache.exists():
+        try:
+            return fbref.parse_schedule(cache.read_text(encoding="utf-8")), _FBREF_SOURCE_MANUAL
+        except SourceFormatError:
+            attempts.append(f"  - cache local ({cache})\n      -> no es una página válida")
+
     manual = _fbref_schedule_urls(season, settings)[0]
     raise SourceDownloadError(
         f"No se pudo obtener el calendario de FBref de {season}. Intentos:\n"
@@ -590,6 +606,12 @@ def ingest_understat_xg(
     return filled
 
 
+# Si ClubElo falla en tantos equipos seguidos, se da la fuente por caída y no se
+# piden los demás: con una petición por equipo y un timeout cada una, insistir
+# convierte el ciclo semanal en una espera de más de una hora (ADR-030).
+_CLUBELO_MAX_FALLOS_SEGUIDOS = 3
+
+
 def ingest_clubelo(
     conn: sqlite3.Connection,
     settings: Settings,
@@ -614,6 +636,7 @@ def ingest_clubelo(
     now = datetime.now(UTC).isoformat()
     rows_by_team: dict[str, int] = {}
     unavailable: dict[str, str] = {}
+    fallos_seguidos = 0
 
     for team_id in registry.team_ids:
         existing = conn.execute(
@@ -621,6 +644,16 @@ def ingest_clubelo(
         ).fetchone()["n"]
         if existing and not force:
             rows_by_team[team_id] = existing  # ya en BD: cero peticiones
+            continue
+
+        if fallos_seguidos >= _CLUBELO_MAX_FALLOS_SEGUIDOS:
+            # La fuente está caída, no es un alias suelto: insistir 31 veces
+            # solo alarga el ciclo (cada intento cuesta su timeout).
+            unavailable[team_id] = (
+                f"no se intentó: ClubElo falló en los {_CLUBELO_MAX_FALLOS_SEGUIDOS} "
+                "equipos anteriores, se da la fuente por caída"
+            )
+            rows_by_team[team_id] = existing
             continue
 
         alias = registry.alias(team_id, "clubelo")
@@ -635,7 +668,9 @@ def ingest_clubelo(
         except (SourceDownloadError, SourceFormatError) as exc:
             unavailable[team_id] = str(exc)
             rows_by_team[team_id] = existing
+            fallos_seguidos += 1
             continue
+        fallos_seguidos = 0
         inserted = 0
         for rating in ratings:
             if rating.valid_from < history_start:
@@ -992,7 +1027,12 @@ def ingest_matchday(
     if report.finished:
         try:
             _, via = ingest_fbref_season(conn, season, settings, registry, force=force)
-            if via != fbref.SOURCE_NAME:
+            if via == _FBREF_SOURCE_MANUAL:
+                report.notes.append(
+                    f"{season}: jornada oficial de una página de FBref guardada a mano "
+                    f"en {_fbref_schedule_cache(season, settings)} (FBref no responde)."
+                )
+            elif via != fbref.SOURCE_NAME:
                 report.notes.append(f"{season}: xG/calendario de FBref vía Wayback Machine.")
         except ETLError as exc:
             fbref_error = str(exc)  # se juzga al final, según lo que haya costado

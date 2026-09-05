@@ -55,7 +55,7 @@ cd ~ && mkdir -p proyectos && cd proyectos
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (179 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (182 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
@@ -83,6 +83,7 @@ uv run alaves backtest --seasons 3   # backtest jornada a jornada (~unos minutos
 | `uv run alaves ingest --historical` | ETL histórico completo (con cache; `--force` re-descarga) | ✅ F1 |
 | `uv run alaves validate` | Chequeos de integridad de la BD (falla con exit code ≠ 0) | ✅ F1 |
 | `uv run alaves status` | Filas por tabla y partidos por temporada | ✅ F1 |
+| `uv run alaves sources` | Prueba cada fuente de datos y muestra qué responde (diagnóstico de red) | ✅ F7 |
 | `uv run alaves features` | Construye el feature set v1 (tabla `features` + Parquet) | ✅ F2 |
 | `uv run alaves baselines` | Evalúa los 3 baselines walk-forward e informa en `docs/reports/` | ✅ F2 |
 | `uv run alaves train [--no-odds]` | Entrena DC + LightGBM + calibración + ensemble y registra la versión | ✅ F3 |
@@ -391,7 +392,7 @@ uv run streamlit run app/dashboard.py
 │           ├── understat.py          # xG de relleno vía API interna (ADR-011)
 │           └── clubelo.py
 ├── app/dashboard.py                  # dashboard Streamlit (solo presentación)
-└── tests/                            # 179 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 182 tests; fixtures congelados en tests/fixtures/
 ```
 
 ## Decisiones tomadas (ADRs)

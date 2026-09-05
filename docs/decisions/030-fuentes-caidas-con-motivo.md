@@ -94,6 +94,41 @@ aplazamientos. Es el coste concreto de tener FBref inalcanzable, y por eso el
 chequeo nuevo informa de ello sin tumbar la validación: no es un fallo que el
 usuario pueda arreglar.
 
+## Añadido: el ciclo semanal tardaba más de una hora
+
+El diagnóstico de ClubElo llegó completo: el DNS resuelve (`37.128.134.74`)
+pero **el puerto 443 no acepta conexiones** — `curl -I https://api.clubelo.com/...`
+se queda 134 s y se rinde. El sitio solo sirve por el 80.
+
+Eso invalida la hipótesis de HTTPS de este mismo ADR, y además **la empeoró**:
+en HTTP la conexión falla rápido; en HTTPS se queda colgada hasta el timeout. Con
+`_TIMEOUT_S = 60` y 3 reintentos son ~3 min por equipo, y ClubElo hace **una
+petición por equipo**: 31 × 3 min ≈ hora y media de ciclo semanal.
+
+Tres arreglos, en orden de importancia:
+
+1. **Timeout de conexión separado del de lectura** (8 s vs 60 s). Leer una
+   respuesta puede tardar; *abrir* la conexión no — un host que no acepta
+   conexiones no va a aceptarlas en el segundo 59.
+2. **Cortafuegos en ClubElo**: tras 3 fallos seguidos se da la fuente por caída
+   y no se piden los 28 restantes. Insistir no aporta información y cuesta un
+   timeout por equipo.
+3. **Vuelta a HTTP** en `base_url`, con la evidencia escrita en el comentario
+   para que nadie repita el intento.
+
+## Añadido: `alaves sources`
+
+La consecuencia incómoda de que las fuentes degraden bien es que cuesta ver qué
+está pasando: el ciclo sigue, y el detalle se resume. `alaves sources` prueba
+una URL representativa de **cada** fuente sin cache y muestra estado, tiempo y
+error. Es el comando que responde "¿y por qué no va?" sin tener que leer código.
+
+Y un fallo que ese diagnóstico dejó a la vista: el mensaje de error de FBref
+propone guardar la página a mano en la cache, pero el ciclo semanal descarga con
+`force=True` y **la ignoraba**, así que el arreglo manual documentado no
+funcionaba. Ahora la cache es el último recurso incluso con `force`, etiquetado
+como `fbref-cache-manual` para que quede claro que no es FBref en vivo.
+
 ## Consecuencias
 
 - Un aviso de fuente caída ahora se puede accionar: dice qué falló, con qué

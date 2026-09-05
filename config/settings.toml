@@ -144,12 +144,12 @@ league = "La liga"
 rate_limit_seconds = 3.0
 
 [sources.clubelo]
-# API CSV pública: https://api.clubelo.com/<Club> devuelve el histórico completo.
-# HTTPS y no HTTP: es el default sano, y además es el sospechoso número uno de
-# que la fuente dejara de responder sin haber tocado el código (redirect a
-# HTTPS o cierre del puerto 80). Hipótesis, no comprobada: el motivo real del
-# fallo lo dirá el aviso de la ingesta, que ahora lo conserva (ADR-030).
-base_url = "https://api.clubelo.com"
+# API CSV pública: http://api.clubelo.com/<Club> devuelve el histórico completo.
+# HTTP y no HTTPS, comprobado: el DNS resuelve (37.128.134.74) pero el puerto
+# 443 no acepta conexiones — `curl -I https://...` se queda 134 s y se rinde.
+# El sitio solo sirve por el 80. Un intento de pasarlo a HTTPS empeoró el ciclo
+# semanal: en HTTP falla rápido, en HTTPS se cuelga hasta el timeout (ADR-030).
+base_url = "http://api.clubelo.com"
 rate_limit_seconds = 2.0
 # Solo se guardan ratings desde esta fecha (un mes antes de la primera temporada).
 history_start = "2018-07-01"

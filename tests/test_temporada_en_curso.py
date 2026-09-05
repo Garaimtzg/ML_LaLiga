@@ -791,3 +791,81 @@ def test_los_programados_no_heredan_la_aproximacion_de_los_jugados(mini_db, mini
     )
     # La J2 tenía 1 jugado: el primer programado la COMPLETA en vez de abrir la J3.
     assert por_jornada == {1: 2, 2: 2, 3: 2}
+
+
+def test_clubelo_no_insiste_con_la_fuente_caida(mini_db, mini_settings, monkeypatch):
+    """Una petición por equipo y un timeout cada una = más de una hora de espera."""
+    from alaves_predictor.etl.errors import SourceDownloadError
+    from alaves_predictor.etl.ingest import _CLUBELO_MAX_FALLOS_SEGUIDOS, ingest_clubelo
+
+    intentos: list[str] = []
+
+    def _fetch(url, cache_path, **kwargs):
+        intentos.append(url)
+        raise SourceDownloadError("Could not connect to server")
+
+    monkeypatch.setattr("alaves_predictor.etl.ingest.fetch_text", _fetch)
+    registry = TeamRegistry(mini_settings.teams)
+    registry.seed_db(mini_db)
+
+    _, unavailable = ingest_clubelo(mini_db, mini_settings, registry)
+
+    # se rinde tras N fallos seguidos, en vez de pedirlo para los 4 equipos
+    assert len(intentos) == _CLUBELO_MAX_FALLOS_SEGUIDOS
+    assert set(unavailable) == set(registry.team_ids)  # todos quedan marcados
+    no_intentados = [m for m in unavailable.values() if "no se intentó" in m]
+    assert len(no_intentados) == len(registry.team_ids) - _CLUBELO_MAX_FALLOS_SEGUIDOS
+
+
+def test_una_pagina_de_fbref_guardada_a_mano_se_usa_aunque_haya_force(
+    mini_settings, tmp_path, monkeypatch
+):
+    """El mensaje de error propone guardarla a mano, pero el ciclo fuerza descarga."""
+    from alaves_predictor.etl.errors import SourceDownloadError
+    from alaves_predictor.etl.ingest import (
+        _FBREF_SOURCE_MANUAL,
+        _fbref_schedule_cache,
+        _fetch_fbref_schedule,
+    )
+
+    mini_settings.data.raw_dir = tmp_path / "raw"
+    cache = _fbref_schedule_cache(mini_settings.current_season, mini_settings)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(
+        (Path(__file__).parent / "fixtures" / "fbref_fixtures_mini.html").read_text(),
+        encoding="utf-8",
+    )
+
+    def _boom(*args, **kwargs):
+        raise SourceDownloadError("FBref no responde")
+
+    monkeypatch.setattr("alaves_predictor.etl.ingest.fetch_text", _boom)
+    matches, via = _fetch_fbref_schedule(mini_settings.current_season, mini_settings, force=True)
+
+    assert via == _FBREF_SOURCE_MANUAL  # queda claro que no es FBref en vivo
+    assert matches[0].matchday == 1  # y aporta la jornada OFICIAL, que es el objetivo
+
+
+def test_el_comando_sources_prueba_todas_las_fuentes(monkeypatch, tmp_path):
+    """Diagnóstico: cuando algo falla, poder ver de un vistazo qué responde cada fuente."""
+    from typer.testing import CliRunner
+
+    from alaves_predictor import cli
+    from alaves_predictor.etl.errors import SourceDownloadError
+
+    settings = _settings_en_tmp(tmp_path)
+    monkeypatch.setattr(cli, "_load_settings", lambda: settings)
+
+    def _fetch(url, cache_path, **kwargs):
+        if "clubelo" in url:
+            raise SourceDownloadError("Could not connect to server")
+        return "contenido de prueba"
+
+    monkeypatch.setattr("alaves_predictor.etl.http_cache.fetch_text", _fetch)
+    result = CliRunner().invoke(cli.app, ["sources"])
+
+    assert result.exit_code == 0
+    for fuente in ("football-data", "fbref", "understat", "clubelo"):
+        assert fuente in result.stdout
+    assert "FALLA" in result.stdout and "OK" in result.stdout
+    assert "Could not connect" in result.stdout  # el motivo, no solo el estado
