@@ -76,13 +76,15 @@ def default_wayback_timestamp(season: str) -> str:
     return f"{end_year}0801000000"
 
 
-def snapshot_url(timestamp: str, season: str, cfg: FBrefConfig) -> str:
+def snapshot_url(timestamp: str, season: str, cfg: FBrefConfig, target: str | None = None) -> str:
     """URL de un snapshot concreto de la Wayback Machine (ADR-010).
 
     El sufijo `id_` en el timestamp pide el HTML original archivado, sin la
-    barra de herramientas que inyecta archive.org.
+    barra de herramientas que inyecta archive.org. `target` permite pedir una
+    URL distinta de la versionada: la temporada en curso vive en la URL sin
+    año, y es de esa de la que archive.org tiene capturas (ADR-030).
     """
-    return f"{cfg.wayback_base}/{timestamp}id_/{schedule_url(season, cfg)}"
+    return f"{cfg.wayback_base}/{timestamp}id_/{target or schedule_url(season, cfg)}"
 
 
 def wayback_url(season: str, cfg: FBrefConfig) -> str:
@@ -90,14 +92,18 @@ def wayback_url(season: str, cfg: FBrefConfig) -> str:
     return snapshot_url(default_wayback_timestamp(season), season, cfg)
 
 
-def cdx_url(season: str, cfg: FBrefConfig) -> str:
+def cdx_url(season: str, cfg: FBrefConfig, target: str | None = None) -> str:
     """URL de la API CDX de archive.org: lista los snapshots archivados de la página.
 
     No todos los snapshots sirven (uno puede tener los marcadores pero las
     celdas de xG vacías, según el momento de la captura): la ingesta los
     prueba del más reciente hacia atrás hasta encontrar uno con xG.
+
+    `target` permite consultar una URL distinta de la versionada: para la
+    temporada EN CURSO hay que preguntar por la URL sin año, que es la que
+    existe y la única que archive.org tiene capturada (ADR-030).
     """
-    target = quote(schedule_url(season, cfg), safe="")
+    target = quote(target or schedule_url(season, cfg), safe="")
     return (
         f"{cfg.wayback_cdx_base}?url={target}&output=text&fl=timestamp"
         "&filter=statuscode:200&collapse=digest&limit=200"

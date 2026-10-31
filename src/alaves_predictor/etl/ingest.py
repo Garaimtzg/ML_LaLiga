@@ -376,11 +376,15 @@ def _fetch_fbref_schedule(
         except (SourceDownloadError, SourceFormatError) as exc:
             attempts.append(f"  - {candidate}\n      -> {exc}")
 
-    # 3. Wayback Machine: candidatos del índice CDX, más recientes primero
+    # 3. Wayback Machine: candidatos del índice CDX, más recientes primero.
+    #    Se pregunta por la MISMA URL que se intentó en directo: para la
+    #    temporada en curso la versionada no existe, así que preguntar por ella
+    #    devolvía cero snapshots y la cascada moría ahí sin remedio (ADR-030).
+    wayback_target = _fbref_schedule_urls(season, settings)[0]
     try:
         cdx_cache = settings.data.raw_dir / "fbref" / f"cdx_{fbref.season_slug(season)}.txt"
         cdx_text = fetch_text(
-            fbref.cdx_url(season, cfg),
+            fbref.cdx_url(season, cfg, target=wayback_target),
             cdx_cache,
             rate_limit_seconds=cfg.rate_limit_seconds,
             force=force,
@@ -396,7 +400,7 @@ def _fetch_fbref_schedule(
     for timestamp in candidates[:8]:  # acotado: 8 intentos como mucho
         try:
             text = fetch_text(
-                fbref.snapshot_url(timestamp, season, cfg),
+                fbref.snapshot_url(timestamp, season, cfg, target=wayback_target),
                 cache,
                 rate_limit_seconds=cfg.rate_limit_seconds,
                 force=True,
@@ -931,6 +935,17 @@ def ingest_fixtures(
                 "fetched_at": now,
             },
             key_cols=["match_id"],
+        )
+        # La jornada se escribe APARTE, con un UPDATE directo: `db.upsert` usa
+        # COALESCE para que dos fuentes rellenen columnas distintas sin pisarse,
+        # así que un `matchday: None` NO borra el valor anterior. Sin esto, los
+        # programados conservaban para siempre la jornada de una pasada vieja y
+        # `assign_scheduled_matchdays` se salía por su guarda sin recalcular
+        # nada (ADR-030). El calendario es la autoridad sobre la jornada de un
+        # partido por jugar: si no la trae, debe quedar NULL para deducirla.
+        conn.execute(
+            "UPDATE matches SET matchday = ? WHERE match_id = ? AND status = 'scheduled'",
+            (fixture.matchday, match_id),
         )
         for bookmaker, triplet in fixture.odds_open.items():
             db.upsert(

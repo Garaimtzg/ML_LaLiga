@@ -129,6 +129,47 @@ propone guardar la página a mano en la cache, pero el ciclo semanal descarga co
 funcionaba. Ahora la cache es el último recurso incluso con `force`, etiquetado
 como `fbref-cache-manual` para que quede claro que no es FBref en vivo.
 
+## Añadido: por qué la jornada futura seguía congelada
+
+Tras arreglar la agrupación, la jornada 4 seguía saliendo con los mismos 8
+partidos de antes. La causa estaba en `db.upsert`, que resuelve los conflictos
+con `COALESCE(excluded.col, tabla.col)` — a propósito, para que dos fuentes
+rellenen columnas distintas de la misma fila sin pisarse (ADR-002).
+
+El efecto secundario: `ingest_fixtures` pasa `matchday: None` cuando el
+calendario no trae la jornada oficial, y COALESCE **no borra nada**. Los
+partidos programados conservaban indefinidamente la jornada que les había
+puesto una pasada antigua, `assign_scheduled_matchdays` los encontraba todos
+con valor y se salía por su guarda. La deducción corregida no llegaba a
+aplicarse a los datos ya existentes.
+
+Arreglo: la jornada de un partido programado se escribe con un `UPDATE`
+directo, fuera del upsert. El calendario es la autoridad sobre ese dato — si no
+lo trae, debe quedar NULL para que se deduzca de nuevo.
+
+## Añadido: el último intento legítimo con FBref
+
+`alaves sources` zanjó el diagnóstico: FBref devuelve **403 en las dos URLs**,
+con `impersonate=True` incluido. No es un problema de URL — la hipótesis de
+ADR-029 sobre la URL sin año no se confirma ni se refuta, porque el 403 llega
+antes de poder distinguirlas. Es Cloudflare rechazando al cliente, y la huella
+TLS de Chrome que usa curl_cffi (ADR-009) ya no basta.
+
+Aquí se para la línea de "insistir más": forzar un control de acceso que el
+sitio ha endurecido a propósito no es algo que este proyecto vaya a hacer.
+Quedan dos vías legítimas, y las dos están ahora operativas:
+
+1. **La Wayback Machine, bien consultada.** El índice CDX se pedía para la URL
+   *versionada*, que para la temporada en curso no existe: devolvía cero
+   snapshots y la cascada moría ahí. Ahora se pregunta por la misma URL que se
+   intentó en directo — la sin año —, que es la que archive.org sí tiene
+   capturada. Es el único camino que puede traer la Wk oficial sin intervención
+   manual.
+2. **El snapshot guardado a mano**, que ya funciona bajo `force` (ver arriba).
+
+Si ninguna da resultado, el sistema sigue operando con las jornadas deducidas:
+degradado, documentado y visible en `validate`.
+
 ## Consecuencias
 
 - Un aviso de fuente caída ahora se puede accionar: dice qué falló, con qué

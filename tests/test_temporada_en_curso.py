@@ -869,3 +869,51 @@ def test_el_comando_sources_prueba_todas_las_fuentes(monkeypatch, tmp_path):
         assert fuente in result.stdout
     assert "FALLA" in result.stdout and "OK" in result.stdout
     assert "Could not connect" in result.stdout  # el motivo, no solo el estado
+
+
+def test_la_jornada_vieja_de_un_programado_no_sobrevive(
+    mini_db, mini_settings, monkeypatch, tmp_path
+):
+    """`db.upsert` usa COALESCE, así que un matchday=None no borraba el anterior.
+
+    Consecuencia real: los programados conservaban la jornada que les puso una
+    pasada vieja, `assign_scheduled_matchdays` los veía todos con jornada y se
+    salía por su guarda. La jornada futura quedaba congelada para siempre
+    (ADR-030).
+    """
+    _sin_calendario_local(mini_settings, tmp_path)
+    _calendar_fetch(monkeypatch, understat_json=_UNDERSTAT_FIXTURES)
+    registry = TeamRegistry(mini_settings.teams)
+    registry.seed_db(mini_db)
+
+    ingest_fixtures(mini_db, mini_settings, registry)
+    season = mini_settings.current_season
+    mid = f"{season}_barcelona_alaves"
+    # simulamos la jornada obsoleta de una pasada anterior
+    mini_db.execute("UPDATE matches SET matchday = 99 WHERE match_id = ?", (mid,))
+    mini_db.commit()
+
+    ingest_fixtures(mini_db, mini_settings, registry)  # Understat no trae jornada
+    assert (
+        mini_db.execute("SELECT matchday FROM matches WHERE match_id = ?", (mid,)).fetchone()[
+            "matchday"
+        ]
+        is None
+    ), "el calendario debe dejarla NULL para que se vuelva a deducir"
+
+
+def test_la_wayback_pregunta_por_la_url_que_existe(mini_settings):
+    """Para la temporada en curso, la URL versionada no existe: CDX daba 0 snapshots."""
+    from alaves_predictor.etl.ingest import _fbref_schedule_urls
+    from alaves_predictor.etl.sources import fbref
+
+    cfg = mini_settings.sources.fbref
+    objetivo = _fbref_schedule_urls(mini_settings.current_season, mini_settings)[0]
+    slug = fbref.season_slug(mini_settings.current_season)
+
+    cdx = fbref.cdx_url(mini_settings.current_season, cfg, target=objetivo)
+    assert "schedule" in cdx and slug not in cdx  # pregunta por la URL sin año
+    snap = fbref.snapshot_url("20261001000000", mini_settings.current_season, cfg, target=objetivo)
+    assert snap.endswith(objetivo)
+    # una temporada cerrada sigue preguntando por la versionada
+    assert "2024-2025" in fbref.cdx_url("2024-25", cfg)
