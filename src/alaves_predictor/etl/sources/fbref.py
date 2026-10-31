@@ -58,19 +58,33 @@ def schedule_url(season: str, cfg: FBrefConfig) -> str:
     )
 
 
+def current_schedule_url(cfg: FBrefConfig) -> str:
+    """Calendario de la temporada EN CURSO, que FBref sirve SIN el año (ADR-029).
+
+    FBref versiona por temporada solo las ya cerradas: la vigente vive en la
+    URL sin slug, y la versionada responde 404 hasta que la temporada termina.
+    Por eso la ingesta de la 2026-27 fallaba con "la URL ya no existe".
+    """
+    return (
+        f"{cfg.base_url}/{cfg.competition_id}/schedule/{cfg.competition_slug}-Scores-and-Fixtures"
+    )
+
+
 def default_wayback_timestamp(season: str) -> str:
     """Timestamp por defecto: 1 de agosto posterior al fin de temporada."""
     end_year = int(season.split("-")[0]) + 1
     return f"{end_year}0801000000"
 
 
-def snapshot_url(timestamp: str, season: str, cfg: FBrefConfig) -> str:
+def snapshot_url(timestamp: str, season: str, cfg: FBrefConfig, target: str | None = None) -> str:
     """URL de un snapshot concreto de la Wayback Machine (ADR-010).
 
     El sufijo `id_` en el timestamp pide el HTML original archivado, sin la
-    barra de herramientas que inyecta archive.org.
+    barra de herramientas que inyecta archive.org. `target` permite pedir una
+    URL distinta de la versionada: la temporada en curso vive en la URL sin
+    año, y es de esa de la que archive.org tiene capturas (ADR-030).
     """
-    return f"{cfg.wayback_base}/{timestamp}id_/{schedule_url(season, cfg)}"
+    return f"{cfg.wayback_base}/{timestamp}id_/{target or schedule_url(season, cfg)}"
 
 
 def wayback_url(season: str, cfg: FBrefConfig) -> str:
@@ -78,14 +92,18 @@ def wayback_url(season: str, cfg: FBrefConfig) -> str:
     return snapshot_url(default_wayback_timestamp(season), season, cfg)
 
 
-def cdx_url(season: str, cfg: FBrefConfig) -> str:
+def cdx_url(season: str, cfg: FBrefConfig, target: str | None = None) -> str:
     """URL de la API CDX de archive.org: lista los snapshots archivados de la página.
 
     No todos los snapshots sirven (uno puede tener los marcadores pero las
     celdas de xG vacías, según el momento de la captura): la ingesta los
     prueba del más reciente hacia atrás hasta encontrar uno con xG.
+
+    `target` permite consultar una URL distinta de la versionada: para la
+    temporada EN CURSO hay que preguntar por la URL sin año, que es la que
+    existe y la única que archive.org tiene capturada (ADR-030).
     """
-    target = quote(schedule_url(season, cfg), safe="")
+    target = quote(target or schedule_url(season, cfg), safe="")
     return (
         f"{cfg.wayback_cdx_base}?url={target}&output=text&fl=timestamp"
         "&filter=statuscode:200&collapse=digest&limit=200"
@@ -156,3 +174,58 @@ def parse_schedule(html: str) -> list[FBrefMatch]:
     if not matches:
         raise SourceFormatError("El calendario de FBref no contiene partidos jugados.")
     return matches
+
+
+class FBrefFixture(BaseModel):
+    """Partido del calendario AÚN NO JUGADO, con su jornada oficial (Wk)."""
+
+    matchday: int | None
+    match_date: date
+    home_team: str
+    away_team: str
+
+
+def parse_fixtures(html: str) -> list[FBrefFixture]:
+    """Extrae los partidos SIN marcador de la página Scores & Fixtures (ADR-029).
+
+    Es la contrapartida de `parse_schedule` (que se queda con los jugados) y la
+    única fuente de calendario con **jornada oficial**: FBref publica la columna
+    Wk también para lo que falta por jugar, así que no hay que deducir la
+    jornada agrupando por fechas.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table", id=re.compile(r"^sched"))
+    if table is None or not isinstance(table, Tag):
+        raise SourceFormatError(
+            "No se encuentra la tabla de calendario (id 'sched...') en la página de FBref; "
+            "la web puede haber cambiado de estructura o servido una página de bloqueo."
+        )
+    body = table.find("tbody")
+    if body is None or not isinstance(body, Tag):
+        raise SourceFormatError("La tabla de calendario de FBref no tiene tbody.")
+
+    fixtures: list[FBrefFixture] = []
+    for row in body.find_all("tr"):
+        if not isinstance(row, Tag):
+            continue
+        cells = _row_cells(row)
+        # Sin equipo local es una fila espaciadora; con marcador, ya se jugó.
+        if not cells.get("home_team") or cells.get("score"):
+            continue
+        if not cells.get("date"):
+            continue  # partido sin fecha confirmada todavía
+        try:
+            fixtures.append(
+                FBrefFixture(
+                    matchday=int(cells["gameweek"]) if cells.get("gameweek") else None,
+                    match_date=date.fromisoformat(cells["date"]),
+                    home_team=cells["home_team"],
+                    away_team=cells["away_team"],
+                )
+            )
+        except (ValidationError, KeyError, ValueError) as exc:
+            raise SourceFormatError(
+                f"Fila de calendario por jugar de FBref inválida "
+                f"({cells.get('home_team')} vs {cells.get('away_team')}): {exc}"
+            ) from exc
+    return fixtures

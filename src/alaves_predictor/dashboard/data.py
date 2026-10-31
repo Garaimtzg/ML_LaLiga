@@ -51,12 +51,20 @@ def projection_table(projection: Projection, settings: Settings) -> pd.DataFrame
     """Tabla de proyección por equipo, ordenada por posición esperada."""
     result = projection.result
     ranked = sorted(projection.teams, key=result.expected_position)
+    zones = settings.league.zones
     rows = []
-    for team in ranked:
+    for rank, team in enumerate(ranked, start=1):
         rows.append(
             {
+                # `Pos` es el PUESTO PROYECTADO (el orden de esta tabla), no la
+                # posición esperada: al ser un ranking, garantiza exactamente
+                # tantos equipos por zona como plazas hay (3 descendidos, etc.).
+                # `Pos esperada` es la media de las simulaciones y puede no caer
+                # nunca en la zona de descenso aunque el equipo sea colista.
+                "Pos": rank,
                 "team_id": team,
                 "Equipo": team_name(settings, team),
+                "zona": zone_for_position(rank, zones),
                 "Pts esperados": round(result.points_for(team), 1),
                 "Pos esperada": round(result.expected_position(team), 1),
                 "P(título)": result.prob_zone(team, "titulo"),
@@ -66,6 +74,38 @@ def projection_table(projection: Projection, settings: Settings) -> pd.DataFrame
             }
         )
     return pd.DataFrame(rows)
+
+
+def zone_for_position(position: float, zones: dict[str, list[int]]) -> str | None:
+    """Zona (clave de config) en la que cae una posición; None si es media tabla.
+
+    Se evalúan de arriba abajo y `titulo` se ignora: es un subconjunto de
+    champions y no una zona propia de la clasificación.
+    """
+    p = int(round(position))
+    for key in ("champions", "europa", "conference", "descenso"):
+        rng = zones.get(key)
+        if rng and rng[0] <= p <= rng[1]:
+            return key
+    return None
+
+
+def team_position_distribution(projection: Projection, team: str) -> pd.DataFrame:
+    """Distribución de posiciones de UN equipo: (posicion, prob, zona)."""
+    dist = projection.result.position_distribution(team)
+    zones = projection.result.zones
+    return pd.DataFrame(
+        {
+            "posicion": range(1, len(dist) + 1),
+            "prob": dist,
+            "zona": [zone_for_position(p, zones) for p in range(1, len(dist) + 1)],
+        }
+    )
+
+
+def team_zone_probabilities(projection: Projection, team: str) -> dict[str, float]:
+    """Probabilidad de cada zona configurada para un equipo."""
+    return {zone: projection.result.prob_zone(team, zone) for zone in projection.result.zones}
 
 
 def position_heatmap(projection: Projection, settings: Settings) -> pd.DataFrame:
@@ -117,14 +157,17 @@ def matchday_predictions(
 
 
 def focus_timeline(features: pd.DataFrame, settings: Settings, season: str) -> pd.DataFrame:
-    """Serie por jornada del equipo foco: Elo, xG a favor/en contra y forma.
+    """Serie por jornada del equipo foco: resultado, Elo, xG a favor/en contra y forma.
 
     Extrae, de cada partido del equipo, los valores que le corresponden según
-    juegue de local o visitante.
+    juegue de local o visitante. Solo partidos JUGADOS: con la temporada en
+    curso el frame trae también el calendario, y dibujar el Elo o la forma de
+    partidos que no se han jugado sugiere un conocimiento que no existe.
     """
     focus = settings.focus_team
     df = features[
         (features["season"] == season)
+        & (features["result"].notna())
         & ((features["home_id"] == focus) | (features["away_id"] == focus))
     ].copy()
     if df.empty:
@@ -144,10 +187,21 @@ def focus_timeline(features: pd.DataFrame, settings: Settings, season: str) -> p
             "xg_favor": pick("home_xg", "away_xg"),
             "xg_contra": pick("away_xg", "home_xg"),
             "forma_pts_ma5": pick("home_points_ma5", "away_points_ma5"),
+            "goles_favor": pick("home_goals", "away_goals"),
+            "goles_contra": pick("away_goals", "home_goals"),
         }
     )
     out["rival"] = out["rival"].map(lambda t: team_name(settings, t))
-    return out.sort_values("matchday").reset_index(drop=True)
+    # V/E/D y puntos desde la óptica del equipo foco (no del local)
+    out["resultado"] = np.where(
+        out["goles_favor"] > out["goles_contra"],
+        "V",
+        np.where(out["goles_favor"] == out["goles_contra"], "E", "D"),
+    )
+    out["puntos"] = out["resultado"].map({"V": 3, "E": 1, "D": 0}).astype(int)
+    out = out.sort_values("matchday").reset_index(drop=True)
+    out["puntos_acumulados"] = out["puntos"].cumsum()
+    return out
 
 
 # --- Rendimiento del modelo y registro ---------------------------------------

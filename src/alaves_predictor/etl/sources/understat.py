@@ -47,6 +47,15 @@ class UnderstatMatch(BaseModel):
     away_xg: float
 
 
+class UnderstatFixture(BaseModel):
+    """Partido AÚN NO JUGADO (isResult=false): fecha y equipos, sin marcador."""
+
+    understat_id: str
+    match_date: date
+    home_team: str
+    away_team: str
+
+
 def season_year(season: str) -> int:
     """Convierte "2018-19" en 2018 (convención de URL de Understat)."""
     return int(season.split("-")[0])
@@ -128,3 +137,40 @@ def parse_league_data(text: str) -> list[UnderstatMatch]:
     if not matches:
         raise SourceFormatError("getLeagueData de Understat no contiene partidos jugados.")
     return matches
+
+
+def parse_league_fixtures(text: str) -> list[UnderstatFixture]:
+    """Extrae los partidos POR JUGAR (isResult=false) de la respuesta JSON.
+
+    La misma llamada que trae el xG trae también el calendario completo de la
+    temporada: Understat publica los 380 partidos desde el principio, con sus
+    fechas. Es la contrapartida a `parse_league_data`, que se queda con los
+    jugados (ADR-029).
+    """
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SourceFormatError(
+            f"getLeagueData de Understat no devolvió JSON válido: {exc}"
+        ) from exc
+
+    fixtures: list[UnderstatFixture] = []
+    for entry in _entries_from(data):
+        if entry.get("isResult"):
+            continue  # ya jugado: lo cubre parse_league_data
+        try:
+            fixtures.append(
+                UnderstatFixture(
+                    understat_id=str(entry["id"]),
+                    match_date=datetime.strptime(
+                        str(entry["datetime"]), "%Y-%m-%d %H:%M:%S"
+                    ).date(),
+                    home_team=entry["h"]["title"],
+                    away_team=entry["a"]["title"],
+                )
+            )
+        except (ValidationError, KeyError, TypeError, ValueError) as exc:
+            raise SourceFormatError(
+                f"Partido por jugar de Understat con formato inesperado ({entry.get('id')}): {exc}"
+            ) from exc
+    return fixtures

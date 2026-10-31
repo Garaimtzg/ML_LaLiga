@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -24,7 +25,7 @@ from alaves_predictor.etl import db
 from alaves_predictor.explain import importance
 from alaves_predictor.features.build import build_features
 from alaves_predictor.features.dictionary import describe
-from alaves_predictor.models.gbm_classifier import VARIANT_NO_ODDS
+from alaves_predictor.models.gbm_classifier import VARIANT_NO_ODDS, VARIANT_WITH_ODDS
 from alaves_predictor.models.train import load_latest_model
 from alaves_predictor.simulation.project import project_standings
 
@@ -79,8 +80,20 @@ def page_next_matchday(bundle, features, settings):
         return
     season, _ = _season_selector(features, settings)
     mds = dd.available_matchdays(features, season)
-    matchday = st.selectbox("Jornada", mds, index=0)
-    variant = VARIANT_NO_ODDS
+    col_md, col_var = st.columns([2, 3])
+    matchday = col_md.selectbox("Jornada", mds, index=0)
+    variant = col_var.radio(
+        "Variante del modelo",
+        [VARIANT_NO_ODDS, VARIANT_WITH_ODDS],
+        format_func=lambda v: (
+            "Sin cuotas (interpretable)" if v == VARIANT_NO_ODDS else "Con cuotas"
+        ),
+        horizontal=True,
+        help="La variante sin cuotas ignora el mercado; la de con cuotas es el techo de precisión.",
+    )
+    if variant not in bundle.variants:
+        st.warning(f"El modelo entrenado no incluye la variante '{variant}'.")
+        return
 
     def predict(rows):
         return bundle.predict_matches(rows, variant)
@@ -90,25 +103,38 @@ def page_next_matchday(bundle, features, settings):
         st.info("No hay partidos para esa jornada.")
         return
 
+    # Selector de partido: por defecto el del equipo foco, si juega esa jornada
     focus = settings.focus_team
-    focus_pred = preds[(preds["home_id"] == focus) | (preds["away_id"] == focus)]
-    if not focus_pred.empty:
-        p = focus_pred.iloc[0]
-        st.subheader(f"{p['Local']} vs {p['Visitante']} — Jornada {matchday}")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("P(victoria local)", f"{p['p_home'] * 100:.1f}%")
-        c2.metric("P(empate)", f"{p['p_draw'] * 100:.1f}%")
-        c3.metric("P(victoria visitante)", f"{p['p_away'] * 100:.1f}%")
-        c4.metric("Marcador más probable", p["pred_score"])
-        fig = go.Figure(
-            go.Bar(
-                x=["Local", "Empate", "Visitante"],
-                y=[p["p_home"], p["p_draw"], p["p_away"]],
-                marker_color=["#2ca02c", "#7f7f7f", "#d62728"],
-            )
+    labels = [f"{r.Local} vs {r.Visitante}" for r in preds.itertuples()]
+    focus_mask = (preds["home_id"] == focus) | (preds["away_id"] == focus)
+    default = int(focus_mask.to_numpy().argmax()) if focus_mask.any() else 0
+    chosen = st.selectbox("Partido", labels, index=default)
+    p = preds.iloc[labels.index(chosen)]
+
+    st.subheader(f"{p['Local']} vs {p['Visitante']} — Jornada {matchday}")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("P(victoria local)", f"{p['p_home'] * 100:.1f}%")
+    c2.metric("P(empate)", f"{p['p_draw'] * 100:.1f}%")
+    c3.metric("P(victoria visitante)", f"{p['p_away'] * 100:.1f}%")
+    c4.metric("Marcador más probable", p["pred_score"])
+    if p["Real"] != "—":
+        st.caption(f"Resultado real: **{p['Real']}** (partido ya jugado)")
+    fig = go.Figure(
+        go.Bar(
+            x=[f"1 · {p['Local']}", "X · Empate", f"2 · {p['Visitante']}"],
+            y=[p["p_home"], p["p_draw"], p["p_away"]],
+            marker_color=["#16a34a", "#94a3b8", "#dc2626"],
+            text=[f"{v * 100:.1f}%" for v in (p["p_home"], p["p_draw"], p["p_away"])],
+            textposition="outside",
+            hovertemplate="%{x}: <b>%{y:.1%}</b><extra></extra>",
         )
-        fig.update_layout(yaxis_tickformat=".0%", height=280, title="Distribución 1X2")
-        st.plotly_chart(fig, width="stretch")
+    )
+    fig.update_layout(
+        yaxis={"tickformat": ".0%", "range": [0, 1]},
+        height=300,
+        margin={"l": 10, "r": 10, "t": 30, "b": 10},
+    )
+    st.plotly_chart(fig, width="stretch")
 
     st.subheader("Resto de la jornada")
     cols = ["Local", "Visitante", "Predicho", "p_home", "p_draw", "p_away", "pred_score", "Real"]
@@ -118,6 +144,188 @@ def page_next_matchday(bundle, features, settings):
     for c in ("P(1)", "P(X)", "P(2)"):
         table[c] = _pct(table[c])
     st.dataframe(table, width="stretch", hide_index=True)
+
+
+# Zonas de la clasificación: etiqueta corta (para el gráfico), color fuerte
+# (franjas y chips) y pastel (filas de tabla). Cuatro tonos bien separados —
+# verde oscuro, lima, cian y rojo — para que Europa y Conference no se
+# confundan. Los rangos de puestos vienen de config ([league.zones]).
+_ZONE_STYLE = {
+    "champions": ("Champions", "#15803d", "#bbf7d0"),
+    "europa": ("Europa", "#84cc16", "#e3f7b8"),
+    "conference": ("Conf.", "#0891b2", "#cffafe"),
+    "descenso": ("Descenso", "#dc2626", "#fecaca"),
+}
+
+# Nombre completo (incluye `titulo`, que no pinta franja propia por ser un
+# subconjunto de champions).
+_ZONE_LABELS = {
+    "titulo": "Título",
+    "champions": "Champions",
+    "europa": "Europa League",
+    "conference": "Conference",
+    "descenso": "Descenso",
+}
+
+
+def _chip(text: str, fg: str, bg: str) -> str:
+    return (
+        f"<span style='background:{bg};color:{fg};padding:2px 10px;border-radius:10px;"
+        f"margin-right:4px;font-weight:600;font-size:0.95em'>{text}</span>"
+    )
+
+
+# Victoria/empate/derrota del equipo foco, con la misma paleta que las zonas.
+_RESULT_CHIP = {
+    "V": _chip("V", "#15803d", "#bbf7d0"),
+    "E": _chip("E", "#475569", "#e2e8f0"),
+    "D": _chip("D", "#dc2626", "#fecaca"),
+}
+
+# Escala de probabilidad en grises-violeta: neutra a propósito, para que el
+# verde/rojo de las zonas destaque y no compita con el color de las celdas.
+_PROB_SCALE = [
+    [0.0, "#f8fafc"],
+    [0.15, "#e2e8f0"],
+    [0.4, "#a5b4fc"],
+    [0.7, "#6366f1"],
+    [1.0, "#312e81"],
+]
+
+
+def _style_projection_table(display, zone_by_row):
+    """Colorea cada fila con el pastel de su zona y formatea los números.
+
+    `zone_by_row` es la serie de zonas alineada con `display` (viene del PUESTO
+    proyectado, no de la posición esperada: así hay exactamente 3 descendidos).
+    """
+
+    def color_row(row):
+        zone = zone_by_row.get(row.name)
+        pastel = _ZONE_STYLE[zone][2] if zone in _ZONE_STYLE else ""
+        css = f"background-color: {pastel}; color: #111827" if pastel else ""
+        return [css] * len(row)
+
+    # Un único .format(): llamarlo dos veces resetea el formato de la primera
+    # llamada (Styler reaplica el display por defecto a las columnas no citadas).
+    fmt = {c: "{:.1%}" for c in display.columns if c.startswith("P(")}
+    fmt.update({"Pts esperados": "{:.1f}", "Pos esperada": "{:.1f}º"})
+    fmt = {c: f for c, f in fmt.items() if c in display.columns}
+    return display.style.apply(color_row, axis=1).format(fmt)
+
+
+def _zone_bands(zones, n_positions):
+    """Zonas visibles (recortadas al tamaño de la liga) como (label, color, low, high)."""
+    bands = []
+    for key, (label, color, _pastel) in _ZONE_STYLE.items():
+        rng = zones.get(key)
+        if not rng:
+            continue
+        low, high = max(1, rng[0]), min(n_positions, rng[1])
+        if low <= high:  # la zona cae dentro de la liga
+            bands.append((label, color, low, high))
+    return bands
+
+
+def _projection_heatmap(heat, table, focus_name, zones, show_pct=True):
+    """Heatmap de distribución de posiciones, con zonas y posición esperada.
+
+    heat: DataFrame (filas = equipos ordenados por posición esperada, columnas =
+    puestos 1..N, valores = probabilidad). Las zonas se pintan como FRANJAS
+    VERTICALES que cruzan todo el mapa (verde Europa, rojo descenso), así se ve
+    de un vistazo qué parte de la distribución de cada equipo cae en cada zona.
+    """
+    teams = list(heat.index)
+    positions = list(heat.columns)
+    z = heat.to_numpy()
+    ylabels = [f"★ {t}" if t == focus_name else t for t in teams]
+    # % solo en las celdas con probabilidad relevante (una tabla 20×20 con todo
+    # el texto satura); el resto se lee por color y por el tooltip
+    threshold = 0.12
+    text = [[f"{v:.0%}" if v >= threshold else "" for v in row] for row in z]
+
+    fig = go.Figure(
+        go.Heatmap(
+            z=z,
+            x=positions,
+            y=ylabels,
+            text=text if show_pct else None,
+            texttemplate="%{text}" if show_pct else None,
+            textfont={"size": 11, "color": "#f8fafc"},
+            colorscale=_PROB_SCALE,
+            zmin=0.0,
+            xgap=2,
+            ygap=2,
+            hovertemplate="<b>%{y}</b><br>Puesto %{x}º: %{z:.1%}<extra></extra>",
+            colorbar={"title": "prob.", "tickformat": ".0%", "thickness": 12},
+        )
+    )
+    expected = table.set_index("Equipo")["Pos esperada"].reindex(teams).to_numpy()
+    fig.add_scatter(
+        x=expected,
+        y=ylabels,
+        mode="markers",
+        showlegend=False,
+        marker={
+            "symbol": "diamond",
+            "size": 10,
+            "color": "#f59e0b",
+            "line": {"width": 1.5, "color": "#78350f"},
+        },
+        hovertemplate="%{y}: posición esperada %{x:.1f}º<extra></extra>",
+    )
+
+    # Franjas verticales de zona: cruzan todo el mapa y tiñen las columnas.
+    # Solo se rotula la zona si es lo bastante ancha para que quepa el texto:
+    # Europa (6º) y Conference (7º) ocupan una única columna y sus etiquetas se
+    # pisarían entre sí. Para esas basta el color + la leyenda de encima.
+    for label, color, low, high in _zone_bands(zones, len(positions)):
+        wide_enough = (high - low + 1) >= 2
+        fig.add_vrect(
+            x0=low - 0.5,
+            x1=high + 0.5,
+            fillcolor=color,
+            opacity=0.25,
+            layer="above",
+            line={"color": color, "width": 2},
+            annotation_text=f"<b>{label}</b>" if wide_enough else None,
+            annotation_position="top",
+            # yshift generoso: el rótulo va en el margen, nunca sobre las celdas
+            annotation={"font": {"size": 11, "color": color}, "yshift": 20},
+        )
+
+    # Rango exacto de las filas: sin esto el área del gráfico sobra por abajo y
+    # las franjas tiñen ese hueco, que parece una casilla extra.
+    fig.update_yaxes(range=[len(teams) - 0.5, -0.5])
+    fig.update_xaxes(title="posición final", dtick=1, range=[0.5, len(positions) + 0.5])
+    fig.update_layout(
+        height=max(400, 30 * len(teams)),
+        margin={"l": 10, "r": 10, "t": 72, "b": 10},
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
+
+
+def _team_distribution_chart(dist, team_name, zones):
+    """Barras de la distribución de posiciones de un equipo, coloreadas por zona."""
+    colors = [_ZONE_STYLE[z][1] if z in _ZONE_STYLE else "#94a3b8" for z in dist["zona"].fillna("")]
+    fig = go.Figure(
+        go.Bar(
+            x=dist["posicion"],
+            y=dist["prob"],
+            marker_color=colors,
+            hovertemplate="Puesto %{x}º: <b>%{y:.1%}</b><extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=f"¿Dónde acaba {team_name}?",
+        xaxis={"title": "posición final", "dtick": 1},
+        yaxis={"title": "probabilidad", "tickformat": ".0%"},
+        height=340,
+        margin={"l": 10, "r": 10, "t": 50, "b": 10},
+        bargap=0.15,
+    )
+    return fig
 
 
 def page_projection(bundle, features, settings):
@@ -140,16 +348,80 @@ def page_projection(bundle, features, settings):
     )
 
     table = dd.projection_table(projection, settings)
-    display = table.drop(columns="team_id").copy()
-    for c in ("P(título)", "P(Champions)", "P(Europa)", "P(descenso)"):
-        display[c] = _pct(display[c])
-    st.dataframe(display, width="stretch", hide_index=True)
+    zones = settings.league.zones
+    focus_name = dd.team_name(settings, settings.focus_team)
+    tab_tabla, tab_mapa, tab_equipo = st.tabs(
+        ["📋 Tabla", "🗺️ Mapa de posiciones", "🔍 Explorar equipo"]
+    )
 
-    st.subheader("Distribución de posiciones")
-    heat = dd.position_heatmap(projection, settings)
-    fig = px.imshow(heat, aspect="auto", color_continuous_scale="Blues", labels={"color": "P"})
-    fig.update_layout(height=max(300, 22 * len(heat)), xaxis_title="posición final")
-    st.plotly_chart(fig, width="stretch")
+    with tab_tabla:
+        _zone_legend(zones)
+        st.caption(
+            "El color viene del **puesto proyectado** (el orden de esta tabla), así que hay "
+            "exactamente tantos equipos por zona como plazas reparte la liga. "
+            "`Pos esperada` es la media de las simulaciones y puede diferir."
+        )
+        solo_zonas = st.checkbox("Mostrar solo zonas europeas y de descenso", value=False)
+        shown = table[table["zona"].notna()] if solo_zonas else table
+        display = shown.drop(columns=["team_id", "zona"])
+        st.dataframe(
+            _style_projection_table(display, shown["zona"]), width="stretch", hide_index=True
+        )
+
+    with tab_mapa:
+        _zone_legend(zones)
+        st.caption(
+            "Cada fila es un equipo (líder arriba) y el color de la celda es la probabilidad "
+            "de acabar en ese puesto. Las franjas verticales marcan las zonas de la leyenda. "
+            f"El rombo ámbar ◆ es la posición esperada y ★ marca a {focus_name}."
+        )
+        show_pct = st.checkbox("Mostrar porcentajes en las celdas", value=True)
+        heat = dd.position_heatmap(projection, settings)
+        st.plotly_chart(
+            _projection_heatmap(heat, table, focus_name, zones, show_pct=show_pct),
+            width="stretch",
+        )
+
+    with tab_equipo:
+        names = list(table["Equipo"])
+        default = names.index(focus_name) if focus_name in names else 0
+        chosen = st.selectbox("Equipo", names, index=default)
+        team_id = table.loc[table["Equipo"] == chosen, "team_id"].iloc[0]
+        row = table[table["Equipo"] == chosen].iloc[0]
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Posición esperada", f"{row['Pos esperada']:.1f}º")
+        c2.metric("Puntos esperados", f"{row['Pts esperados']:.1f}")
+        zone = dd.zone_for_position(row["Pos esperada"], zones)
+        c3.metric("Zona previsible", _ZONE_LABELS.get(zone, "Media tabla"))
+
+        probs = dd.team_zone_probabilities(projection, team_id)
+        cols = st.columns(len(probs))
+        for col, (zone_key, value) in zip(cols, probs.items(), strict=True):
+            col.metric(_ZONE_LABELS.get(zone_key, zone_key), f"{value * 100:.1f}%")
+
+        dist = dd.team_position_distribution(projection, team_id)
+        st.plotly_chart(_team_distribution_chart(dist, chosen, zones), width="stretch")
+
+
+def _zone_legend(zones):
+    """Leyenda de zonas con sus rangos de puestos.
+
+    Los chips usan el MISMO pastel que las filas de la tabla (con un borde del
+    color fuerte), para que leyenda y tabla se vean idénticas.
+    """
+    chips = []
+    for key, (_short, color, pastel) in _ZONE_STYLE.items():
+        rng = zones.get(key)
+        if not rng:
+            continue
+        span = f"{rng[0]}º" if rng[0] == rng[1] else f"{rng[0]}º–{rng[1]}º"
+        chips.append(
+            f"<span style='background:{pastel};color:#111827;padding:3px 10px;"
+            f"border-left:5px solid {color};border-radius:4px;margin-right:8px;"
+            f"font-size:0.85em'>{_ZONE_LABELS[key]} · {span}</span>"
+        )
+    st.markdown(" ".join(chips), unsafe_allow_html=True)
 
 
 def page_focus(bundle, features, settings):
@@ -158,8 +430,38 @@ def page_focus(bundle, features, settings):
     season, _ = _season_selector(features, settings)
     timeline = dd.focus_timeline(features, settings, season)
     if timeline.empty:
-        st.info(f"{name} no tiene partidos en {season}.")
+        st.info(f"{name} aún no ha jugado ningún partido en {season}.")
         return
+
+    # Recorrido de lo ya jugado: con la temporada arrancada esto es lo primero
+    # que se quiere ver (en agosto son 3 jornadas, no 38).
+    st.subheader(f"Recorrido en {season}")
+    cols = st.columns(4)
+    cols[0].metric("Jugados", len(timeline))
+    cols[1].metric("Puntos", int(timeline["puntos"].sum()))
+    cols[2].metric(
+        "Goles (F–C)",
+        f"{int(timeline['goles_favor'].sum())}–{int(timeline['goles_contra'].sum())}",
+    )
+    cols[3].metric(
+        "xG (F–C)", f"{timeline['xg_favor'].sum():.1f}–{timeline['xg_contra'].sum():.1f}"
+    )
+    st.markdown(" ".join(_RESULT_CHIP[r] for r in timeline["resultado"]), unsafe_allow_html=True)
+    st.dataframe(
+        timeline.assign(
+            Jornada=timeline["matchday"],
+            Rival=timeline["rival"],
+            Dónde=np.where(timeline["local"], "Casa", "Fuera"),
+            Marcador=[
+                f"{int(f)}–{int(c)}"
+                for f, c in zip(timeline["goles_favor"], timeline["goles_contra"], strict=True)
+            ],
+        )[["Jornada", "Rival", "Dónde", "Marcador", "resultado", "puntos_acumulados"]].rename(
+            columns={"resultado": "R", "puntos_acumulados": "Pts acum."}
+        ),
+        hide_index=True,
+        width="stretch",
+    )
 
     st.subheader("Elo por jornada")
     st.plotly_chart(

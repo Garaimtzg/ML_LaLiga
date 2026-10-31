@@ -11,13 +11,20 @@ current_season = "2026-27"
 teams_per_season = 20
 
 [league.zones]
-# Rangos de posición [desde, hasta] de cada zona (1 = líder). Reparto europeo
-# aproximado de LaLiga; ajustable sin tocar código (CLAUDE.md §8).
+# Rangos de posición [desde, hasta] de cada zona (1 = líder). Ajustable sin
+# tocar código (CLAUDE.md §8). Reparto vigente de LaLiga:
+#  - Champions: 4 plazas directas + la 5ª por "European Performance Spot"
+#    (las 2 federaciones con mejor coeficiente de la temporada). España la ha
+#    obtenido en las últimas temporadas; si la perdiera, poner [1, 4] y
+#    desplazar europa/conference un puesto hacia arriba.
+#  - Europa League: 6º de liga. El campeón de Copa del Rey también entra, pero
+#    eso no depende de la posición: no se modela (limitación documentada).
+#  - Conference: 7º (puede variar si el campeón de Copa ya está clasificado).
 titulo = [1, 1]
-champions = [1, 4]     # fase de liga de la Champions
-europa = [5, 6]        # Europa League
-conference = [7, 7]    # Conference (aprox.; varía con las copas)
-descenso = [18, 20]
+champions = [1, 5]
+europa = [6, 6]
+conference = [7, 7]
+descenso = [18, 20]    # descienden 3
 
 [seasons]
 # Temporadas históricas de entrenamiento (SPEC §5): desde 2018-19 porque no hay
@@ -112,6 +119,13 @@ weight_grid_step = 0.05
 base_url = "https://www.football-data.co.uk/mmz4281"
 division = "SP1"               # Primera División española
 rate_limit_seconds = 1.0
+# Calendario de próximos partidos para el modo temporada (F7, ADR-026).
+fixtures_url = "https://www.football-data.co.uk/fixtures.csv"
+# Calendario local opcional: crea este CSV (formato football-data:
+# Div,Date,Time,HomeTeam,AwayTeam[,cuotas]) para sembrar el calendario oficial
+# a mano hasta que football-data publique la temporada. La ingesta lo combina
+# con el remoto; si el remoto aún no tiene datos, este basta.
+local_fixtures_file = "data/fixtures.csv"
 
 [sources.fbref]
 # xG por partido y jornada oficial, de la página Scores & Fixtures (ADR-008).
@@ -131,6 +145,10 @@ rate_limit_seconds = 3.0
 
 [sources.clubelo]
 # API CSV pública: http://api.clubelo.com/<Club> devuelve el histórico completo.
+# HTTP y no HTTPS, comprobado: el DNS resuelve (37.128.134.74) pero el puerto
+# 443 no acepta conexiones — `curl -I https://...` se queda 134 s y se rinde.
+# El sitio solo sirve por el 80. Un intento de pasarlo a HTTPS empeoró el ciclo
+# semanal: en HTTP falla rápido, en HTTPS se cuelga hasta el timeout (ADR-030).
 base_url = "http://api.clubelo.com"
 rate_limit_seconds = 2.0
 # Solo se guardan ratings desde esta fecha (un mes antes de la primera temporada).

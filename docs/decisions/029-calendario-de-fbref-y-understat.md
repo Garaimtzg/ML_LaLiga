@@ -1,0 +1,144 @@
+# ADR-029 — El calendario se obtiene solo: FBref + Understat, fusionados
+
+Fecha: 2026-09-02 · Estado: aceptada · Fase: F7
+
+## Contexto
+
+Con la 2026-27 en marcha, el ciclo semanal ingería bien los resultados pero
+dejaba la BD **sin un solo partido programado**, así que `predict --next` y
+`simulate` no tenían nada que hacer. El calendario oficial de LaLiga existe y es
+público desde antes de empezar la temporada; el problema era de dónde leerlo.
+
+ADR-026 eligió el `fixtures.csv` de football-data. En la práctica ese archivo
+**solo lista los encuentros inminentes** (una o dos jornadas), no la temporada:
+en una ejecución real aportó 1 partido, y en otra 0 porque los que traía ya
+constaban jugados. Con eso se puede predecir la próxima jornada a duras penas,
+pero no se puede proyectar la clasificación final, que es medio proyecto.
+
+El remedio previsto era sembrar `data/fixtures.csv` a mano. Funciona, pero es
+trabajo manual recurrente para un dato que ya está publicado, y envejece.
+
+Además había un fallo tapando la mejor fuente: **FBref respondía 404 para la
+2026-27**. La causa no era un bloqueo anti-bot sino la URL: `schedule_url()`
+construye siempre la versionada
+(`/comps/12/2026-2027/schedule/2026-2027-La-Liga-...`), y **FBref solo versiona
+las temporadas ya cerradas** — la vigente vive en la URL sin año
+(`/comps/12/schedule/La-Liga-Scores-and-Fixtures`). Por eso el mensaje decía
+"la URL ya no existe" y la Wayback tampoco tenía nada que archivar.
+
+## Opciones consideradas
+
+**A. Seguir sembrando `data/fixtures.csv` a mano.** Cero código, pero deja el
+sistema dependiendo de que alguien copie 380 filas y las mantenga cuando LaLiga
+mueve horarios. Es justo el trabajo que el proyecto debería quitar.
+
+**B. Añadir API-Football.** Tiene el calendario completo y estructurado, pero
+exige API key y su plan gratuito son 100 peticiones/día. ADR-026 ya lo descartó
+por eso, y nada ha cambiado.
+
+**C. Una sola fuente nueva.** Ninguna las tiene todas: football-data tiene las
+**cuotas** (que alimentan la variante `con_cuotas`) pero pocos partidos; FBref
+tiene la **jornada oficial** pero bloquea bots a ratos; Understat tiene la
+**temporada entera** pero ni cuotas ni jornada.
+
+**D. (elegida) Fusionar los tres, campo a campo.** Cada uno aporta lo que tiene
+y ninguno es imprescindible.
+
+## Decisión
+
+`ingest_fixtures` deja de ser "el primero que responda" y pasa a **fusionar**.
+Los orígenes se procesan en orden de preferencia y cada uno solo rellena lo que
+el anterior dejó vacío (la precedencia se lee de arriba abajo en el código):
+
+| Orden | Origen | Qué aporta que los demás no |
+|-------|--------|------------------------------|
+| 1 | football-data `fixtures.csv` | **cuotas de apertura** |
+| 2 | FBref *Scores & Fixtures* | **jornada oficial (Wk)** |
+| 3 | Understat `getLeagueData` | **la temporada entera** |
+| 4 | `data/fixtures.csv` local | último recurso manual |
+
+La fecha la fija el primer origen que traiga el partido; la jornada y las
+cuotas, el primero que las tenga. Un partido que solo conoce Understat entra
+igual; uno que solo conoce football-data entra con sus cuotas.
+
+Piezas nuevas:
+
+- `fbref.current_schedule_url()` y una cascada de URLs candidatas: para la
+  temporada en curso se prueba **primero la URL sin año** y después la
+  versionada (porque `current_season` es config, no una verdad de FBref). Esto
+  arregla el 404 y, de paso, devuelve la jornada oficial también para los
+  partidos ya jugados.
+- `fbref.parse_fixtures()` y `understat.parse_league_fixtures()`: la
+  contrapartida de los parsers existentes, quedándose con lo **no jugado**. La
+  misma página y la misma llamada que ya se hacían para el xG traen el
+  calendario, así que no cuestan peticiones nuevas — `ingest_fixtures` lee la
+  cache que el paso de xG acaba de refrescar.
+- `assign_scheduled_matchdays` **no deduce si no hace falta**: si todos los
+  programados traen jornada oficial, no toca nada. La deducción por proximidad
+  de fechas falla justo donde más duele (jornadas entre semana, aplazamientos),
+  así que el dato oficial siempre gana.
+
+## Añadido tras la primera ejecución con calendario
+
+Con los 350 partidos ya en la BD, la primera jornada proyectada salió con **11
+encuentros**. Una jornada de LaLiga tiene 10: la deducción por saltos de fecha
+estaba fusionando dos jornadas.
+
+La causa es que ese criterio no puede funcionar: el salto de un sábado al martes
+siguiente (dos jornadas distintas, con una entre semana de por medio) es el
+mismo que el de un viernes al lunes de la **misma** jornada. Con `gap_days=3`
+cualquiera de los dos casos cae del mismo lado.
+
+`assign_scheduled_matchdays` pasa a agrupar por **número de encuentros**: los
+programados, en orden de fecha, se reparten en bloques de n/2 (10 en LaLiga,
+`league.matches_per_round`, parametrizado). No hay umbral que ajustar y el
+tamaño de jornada sale siempre exacto. Queda una limitación: si falta algún
+partido programado los bloques se desplazan — otra razón para preferir la Wk
+oficial de FBref, que es lo que esta función evita tener que deducir.
+
+También se cambió el error de FBref para que **liste todos los intentos** (URL
+sin año, URL versionada y Wayback) con lo que devolvió cada uno. Antes nombraba
+solo la versionada, así que ante un fallo no había forma de saber si la otra
+llegó a probarse.
+
+## FBref pasa a ser opcional (no se elimina)
+
+Tras varias semanas con FBref inalcanzable, la pregunta natural es si quitarlo.
+La respuesta es no, pero sí dejar de tratarlo como imprescindible.
+
+**Por qué no se elimina.** FBref es la fuente de la **jornada oficial de los
+3.040 partidos históricos** ya cargados, y de buena parte de su xG (directo o
+vía Wayback, ADR-008/010). "No se usa" solo es cierto para la temporada en
+curso; para el histórico se usa entero. Eliminarlo significaría que una
+reconstrucción de la BD desde cero perdería la Wk oficial de ocho temporadas y
+dejaría a **Understat como única fuente de xG** — precisamente la fuente que ya
+se rompió una vez (rediseño de dic-2025) y obligó a rehacer el adaptador
+(ADR-011). Cambiar dos fuentes por una es perder redundancia justo donde el
+proyecto ya se quemó.
+
+**Qué se cambia.** El aviso deja de dispararse por que FBref haya fallado y
+pasa a dispararse por lo que ese fallo haya **costado**, igual que se hizo con
+el calendario:
+
+- si el xG está cubierto y todos los partidos tienen jornada, es una **nota**
+  informativa (gris, una línea): FBref no hizo falta;
+- si queda xG sin cubrir o partidos sin jornada, entonces sí es un **aviso**
+  con el detalle completo de los intentos.
+
+`MatchdayReport` gana `notes` junto a `warnings` para poder distinguirlo. La
+regla general: un aviso es algo que el usuario debería mirar; si no hay nada
+que mirar, no es un aviso.
+
+## Consecuencias
+
+- El calendario se obtiene solo. `data/fixtures.csv` queda como red de
+  seguridad, no como requisito.
+- Tres fuentes independientes para el mismo dato: que FBref bloquee bots o que
+  football-data no publique deja de dejar al sistema sin nada que predecir.
+- Con FBref accesible, las jornadas dejan de ser una deducción: la proyección
+  Monte Carlo agrupa por la jornada real, no por fechas cercanas.
+- El coste: `ingest_fixtures` es más largo y hace más peticiones (aunque
+  reutiliza cache). A cambio deja de haber un paso manual en la rutina semanal.
+- Understat sube de categoría: era "relleno de xG" y ahora es también la única
+  fuente que garantiza los 380 partidos. Si cambiara su endpoint interno (ya
+  pasó una vez, ADR-008/011), quedarían FBref y la siembra local.

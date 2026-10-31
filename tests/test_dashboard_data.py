@@ -62,6 +62,64 @@ def test_projection_table_y_heatmap(bundle, synthetic_features, model_settings):
     assert heat.sum(axis=1).to_numpy() == pytest.approx(1.0)
 
 
+def test_projection_table_asigna_zona_por_puesto_proyectado(model_settings):
+    """La zona sale del PUESTO (orden de la tabla), no de la posición esperada.
+
+    Con la posición esperada (una media) puede no haber ningún equipo en 18-20
+    y saldrían menos de 3 descendidos; por puesto siempre salen los que marca
+    la config: 5 Champions, 1 Europa, 1 Conference, 3 descenso.
+    """
+    from types import SimpleNamespace
+
+    n_teams = 20
+    teams = [f"t{i:02d}" for i in range(1, n_teams + 1)]
+    zones = model_settings.league.zones
+    # posiciones esperadas comprimidas hacia el centro (como en la realidad):
+    # ninguna cae en 18-20 pese a haber colistas claros
+    expected = {t: 3.0 + i * 0.7 for i, t in enumerate(teams)}
+    fake_result = SimpleNamespace(
+        expected_position=lambda t: expected[t],
+        points_for=lambda t: 90.0 - expected[t],
+        prob_zone=lambda t, z: 0.1,
+        zones=zones,
+    )
+    projection = SimpleNamespace(result=fake_result, teams=teams)
+
+    table = dd.projection_table(projection, model_settings)
+    assert list(table["Pos"]) == list(range(1, n_teams + 1))
+    counts = table["zona"].value_counts()
+    assert counts.get("champions", 0) == 5
+    assert counts.get("europa", 0) == 1
+    assert counts.get("conference", 0) == 1
+    assert counts.get("descenso", 0) == 3  # exactamente 3 descendidos
+    assert table["zona"].isna().sum() == n_teams - 10  # media tabla sin zona
+
+
+def test_zone_for_position_usa_los_rangos_de_config():
+    zones = {"titulo": [1, 1], "champions": [1, 5], "europa": [6, 6], "descenso": [18, 20]}
+    assert dd.zone_for_position(1, zones) == "champions"  # titulo no es zona propia
+    assert dd.zone_for_position(5.4, zones) == "champions"  # redondea al puesto
+    assert dd.zone_for_position(6, zones) == "europa"
+    assert dd.zone_for_position(12, zones) is None  # media tabla
+    assert dd.zone_for_position(19.2, zones) == "descenso"
+
+
+def test_team_position_distribution_y_zonas(bundle, synthetic_features, model_settings):
+    proj = project_standings(
+        bundle, synthetic_features, model_settings, "2021-22", from_matchday=6, n=500
+    )
+    team = proj.teams[0]
+    dist = dd.team_position_distribution(proj, team)
+    assert list(dist["posicion"]) == list(range(1, len(proj.teams) + 1))
+    assert dist["prob"].sum() == pytest.approx(1.0)  # es una distribución
+    # la zona de cada puesto sale de la config
+    assert dist.loc[dist["posicion"] == 1, "zona"].iloc[0] == "champions"
+
+    probs = dd.team_zone_probabilities(proj, team)
+    assert set(probs) == set(proj.result.zones)
+    assert all(0.0 <= v <= 1.0 for v in probs.values())
+
+
 def test_matchday_predictions_con_nombres(bundle, synthetic_features, model_settings):
     def predict(rows):
         return bundle.predict_matches(rows, "sin_cuotas")
@@ -83,6 +141,9 @@ def test_focus_timeline(model_settings):
                 "date": "2025-08-15",
                 "home_id": "alaves",
                 "away_id": "getafe",
+                "home_goals": 2.0,
+                "away_goals": 0.0,
+                "result": "H",
                 "elo_clubelo_home": 1650.0,
                 "elo_clubelo_away": 1600.0,
                 "home_xg": 1.8,
@@ -96,6 +157,9 @@ def test_focus_timeline(model_settings):
                 "date": "2025-08-22",
                 "home_id": "barcelona",
                 "away_id": "alaves",
+                "home_goals": 1.0,
+                "away_goals": 1.0,
+                "result": "D",
                 "elo_clubelo_home": 1720.0,
                 "elo_clubelo_away": 1655.0,
                 "home_xg": 1.2,
@@ -114,6 +178,9 @@ def test_focus_timeline(model_settings):
     assert tl.iloc[1]["elo"] == 1655.0
     assert tl.iloc[1]["xg_favor"] == 1.5 and tl.iloc[1]["xg_contra"] == 1.2
     assert tl.iloc[1]["rival"] == "FC Barcelona"
+    # resultado y puntos, desde la óptica del Alavés: gana la J1, empata la J2
+    assert list(tl["resultado"]) == ["V", "E"]
+    assert list(tl["puntos_acumulados"]) == [3, 4]
 
 
 def test_registry_y_prediction_log(bundle, model_settings, mini_db):

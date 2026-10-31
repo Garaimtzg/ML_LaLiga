@@ -52,9 +52,18 @@ _STATUS_HINTS = {
 
 # Reintentos ante fallos transitorios de red (timeouts, cortes de conexión):
 # api.clubelo.com, p. ej., responde lento a veces. Backoff: 2 s, 4 s.
+#
+# Los dos plazos son distintos a propósito. Leer una respuesta puede tardar
+# (páginas grandes, servidor lento), pero ABRIR la conexión no: un host que no
+# acepta conexiones no va a aceptarlas en el segundo 59. Con un único timeout de
+# 60 s, una fuente caída costaba 3 min por petición — y ClubElo hace una por
+# equipo, así que el ciclo semanal se iba a hora y media (ADR-030).
+_CONNECT_TIMEOUT_S = 8.0
 _TIMEOUT_S = 60.0
 _RETRY_ATTEMPTS = 3
 _RETRY_BACKOFF_S = 2.0
+
+_HTTPX_TIMEOUT = httpx.Timeout(_TIMEOUT_S, connect=_CONNECT_TIMEOUT_S)
 
 
 def _download(url: str, headers: dict[str, str] | None, impersonate: bool) -> tuple[int, bytes]:
@@ -63,10 +72,14 @@ def _download(url: str, headers: dict[str, str] | None, impersonate: bool) -> tu
     for attempt in range(1, _RETRY_ATTEMPTS + 1):
         try:
             if impersonate:
-                response = cf_requests.get(url, impersonate="chrome", timeout=_TIMEOUT_S)
+                response = cf_requests.get(
+                    url,
+                    impersonate="chrome",
+                    timeout=(_CONNECT_TIMEOUT_S, _TIMEOUT_S),
+                )
                 return response.status_code, response.content
             http_response = httpx.get(
-                url, headers=headers or _HEADERS, timeout=_TIMEOUT_S, follow_redirects=True
+                url, headers=headers or _HEADERS, timeout=_HTTPX_TIMEOUT, follow_redirects=True
             )
             return http_response.status_code, http_response.content
         except (httpx.HTTPError, CurlError) as exc:
