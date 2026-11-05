@@ -74,3 +74,6 @@ check_untyped_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "e2e: pipeline completo sobre la liga sintética de tests/e2e (~30 s; -m 'not e2e' lo salta)",
+]
