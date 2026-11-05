@@ -10,6 +10,7 @@ import pytest
 
 from alaves_predictor.etl import db
 from alaves_predictor.etl.ingest import ingest_historical, make_match_id
+from alaves_predictor.features import form
 from alaves_predictor.features.build import build_features, feature_columns, persist_features
 
 
@@ -125,3 +126,37 @@ def test_persistencia_reproducible(features_df) -> None:
     persist_features(conn, df, settings)
     n = conn.execute("SELECT COUNT(*) AS n FROM features").fetchone()["n"]
     assert n == 12
+
+
+def test_forma_de_partidos_programados_hereda_la_ultima_conocida() -> None:
+    """Un programado lejano conserva la forma de lo último jugado (ADR-031).
+
+    Antes la ventana contaba los programados como huecos: a 6 partidos vista
+    la media de 5 ya no tenía datos y la feature salía NaN, un caso que el
+    modelo no vio nunca al entrenar (proyección de la temporada en curso).
+    """
+    goals = [2, 0, 1, 3, 1, 0]  # 6 jugados del equipo "a" (todos en casa)
+    n_scheduled = 8
+    dates = pd.date_range("2026-08-15", periods=len(goals) + n_scheduled, freq="7D")
+    matches = pd.DataFrame(
+        {
+            "match_id": [f"m{i}" for i in range(len(dates))],
+            "season": "2026-27",
+            "date": dates.strftime("%Y-%m-%d"),
+            "home_id": "a",
+            "away_id": [f"rival{i}" for i in range(len(dates))],
+            "home_goals": goals + [None] * n_scheduled,
+            "away_goals": [1] * len(goals) + [None] * n_scheduled,
+            "home_xg": [1.0] * len(goals) + [None] * n_scheduled,
+            "away_xg": [1.0] * len(goals) + [None] * n_scheduled,
+        }
+    )
+    long_df = form.add_rolling_form(form.long_format(matches), [5])
+    team_a = long_df[long_df["team"] == "a"].reset_index(drop=True)
+    expected = sum(goals[-5:]) / 5  # media de los 5 últimos JUGADOS
+    scheduled = team_a.iloc[len(goals) :]
+    assert scheduled["goals_for_ma5"].notna().all()
+    assert scheduled["goals_for_ma5"].to_numpy() == pytest.approx([expected] * n_scheduled)
+    # lo jugado no cambia: la fila k sigue viendo solo los k partidos anteriores
+    assert pd.isna(team_a.loc[0, "goals_for_ma5"])
+    assert team_a.loc[3, "goals_for_ma5"] == pytest.approx(sum(goals[:3]) / 3)

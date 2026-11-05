@@ -13,7 +13,7 @@ que ninguna feature queda sin documentar.
 | Fragmento | Significado |
 |-----------|-------------|
 | `home_` / `away_` | Del equipo **local** / **visitante** de ese partido |
-| `_ma5` / `_ma10` | **Media móvil** de los últimos 5 / 10 partidos del equipo (anteriores al actual, nunca el propio) |
+| `_ma5` / `_ma10` | **Media móvil** de los últimos 5 / 10 partidos jugados del equipo (anteriores al actual, nunca el propio). En un partido aún por jugar, la última media conocida (ADR-031) |
 | `_venue_` | La media cuenta solo partidos en la **misma condición**: local en casa, visitante fuera |
 | `_diff` | Diferencia local − visitante (positivo = ventaja del local) |
 | `_pre` | Valor justo **antes** del partido |
