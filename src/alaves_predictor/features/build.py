@@ -265,15 +265,31 @@ def in_progress_seasons(features: pd.DataFrame, settings: Settings | None = None
     return partial
 
 
-def persist_features(conn: sqlite3.Connection, features: pd.DataFrame, settings: Settings) -> Path:
-    """Guarda el snapshot: tabla `features` (JSON por partido) + Parquet. Devuelve la ruta."""
+def feature_payload(row: dict) -> dict:
+    """Valores de features de un partido, listos para JSON (NaN/pd.NA -> None).
+
+    Es el vector que se guarda en la tabla `features` y del que sale el hash
+    que acompaña a cada predicción (CLAUDE.md §5.5).
+    """
+    return {c: (None if pd.isna(v) else v) for c, v in row.items() if c not in META_COLS}
+
+
+def persist_features(
+    conn: sqlite3.Connection,
+    features: pd.DataFrame,
+    settings: Settings,
+    *,
+    write_parquet: bool = True,
+) -> Path:
+    """Guarda el snapshot: tabla `features` (JSON por partido) + Parquet. Devuelve la ruta.
+
+    `write_parquet=False` para guardar solo unas filas (las de una predicción)
+    sin pisar el Parquet, que es el feature store completo de `alaves features`.
+    """
     version = settings.features.feature_set_version
-    cols = feature_columns(features)
     now = datetime.now(UTC).isoformat()
-    for row in features.itertuples(index=False):
-        row_dict = row._asdict()
-        # pd.NA/NaN no son serializables a JSON: se guardan como null
-        payload = {c: (None if pd.isna(row_dict[c]) else row_dict[c]) for c in cols}
+    for row in features.to_dict(orient="records"):
+        payload = feature_payload(row)
         payload["_computed_at"] = now
         conn.execute(
             "INSERT INTO features (match_id, feature_set_version, as_of_date, payload_json) "
@@ -281,15 +297,16 @@ def persist_features(conn: sqlite3.Connection, features: pd.DataFrame, settings:
             "DO UPDATE SET as_of_date = excluded.as_of_date, "
             "payload_json = excluded.payload_json",
             (
-                row_dict["match_id"],
+                row["match_id"],
                 version,
-                row_dict["as_of_date"],
+                row["as_of_date"],
                 json.dumps(payload, ensure_ascii=False, default=float),
             ),
         )
     conn.commit()
 
-    settings.data.features_dir.mkdir(parents=True, exist_ok=True)
     parquet_path = settings.data.features_dir / f"features_{version}.parquet"
-    features.to_parquet(parquet_path, index=False)
+    if write_parquet:
+        settings.data.features_dir.mkdir(parents=True, exist_ok=True)
+        features.to_parquet(parquet_path, index=False)
     return parquet_path

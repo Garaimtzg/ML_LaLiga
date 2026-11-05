@@ -10,12 +10,14 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from alaves_predictor.config import Settings
+from alaves_predictor.models.predict import next_round
 from alaves_predictor.simulation import monte_carlo as mc
 from alaves_predictor.simulation.project import Projection
 
@@ -127,6 +129,20 @@ def position_heatmap(projection: Projection, settings: Settings) -> pd.DataFrame
 def available_matchdays(features: pd.DataFrame, season: str) -> list[int]:
     md = features.loc[features["season"] == season, "matchday"].dropna().unique()
     return sorted(int(x) for x in md)
+
+
+def default_matchday(
+    features: pd.DataFrame, settings: Settings, season: str, today: date
+) -> int | None:
+    """Jornada con la que abre la página "Próxima jornada".
+
+    En la temporada en curso, la próxima de verdad (misma regla que `alaves
+    predict`, aplazados incluidos: ADR-031). Antes abría siempre en la primera
+    de la lista, la J1, ya jugada hacía meses. En una temporada cerrada no hay
+    próxima: None, y la página empieza por la primera.
+    """
+    matchday, _ = next_round(features, season, settings.league.matches_per_round, today)
+    return matchday
 
 
 def matchday_predictions(

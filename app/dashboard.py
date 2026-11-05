@@ -26,6 +26,7 @@ from alaves_predictor.explain import importance
 from alaves_predictor.features.build import build_features
 from alaves_predictor.features.dictionary import describe
 from alaves_predictor.models.gbm_classifier import VARIANT_NO_ODDS, VARIANT_WITH_ODDS
+from alaves_predictor.models.predict import today_utc
 from alaves_predictor.models.train import load_latest_model
 from alaves_predictor.simulation.project import project_standings
 
@@ -81,7 +82,8 @@ def page_next_matchday(bundle, features, settings):
     season, _ = _season_selector(features, settings)
     mds = dd.available_matchdays(features, season)
     col_md, col_var = st.columns([2, 3])
-    matchday = col_md.selectbox("Jornada", mds, index=0)
+    upcoming = dd.default_matchday(features, settings, season, today_utc())
+    matchday = col_md.selectbox("Jornada", mds, index=mds.index(upcoming) if upcoming in mds else 0)
     variant = col_var.radio(
         "Variante del modelo",
         [VARIANT_NO_ODDS, VARIANT_WITH_ODDS],

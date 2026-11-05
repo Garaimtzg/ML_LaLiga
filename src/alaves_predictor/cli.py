@@ -161,50 +161,29 @@ def _run_matchday_cycle() -> None:
 
 def _predict_and_simulate_next(conn, settings, bundle, features) -> None:
     """Predice la próxima jornada programada, persiste, y simula la clasificación."""
-    from datetime import UTC, datetime
-
-    from alaves_predictor.features.build import persist_features
     from alaves_predictor.models.gbm_classifier import VARIANT_NO_ODDS, VARIANT_WITH_ODDS
+    from alaves_predictor.models.predict import next_round, persist_predictions, today_utc
     from alaves_predictor.simulation.project import project_standings
 
-    scheduled = features[
-        features["result"].isna()
-        & (features["season"] == settings.current_season)
-        & features["matchday"].notna()
-    ]
-    if scheduled.empty:
+    next_md, rows = next_round(
+        features, settings.current_season, settings.league.matches_per_round, today_utc()
+    )
+    if next_md is None:
         typer.secho(
             "No hay partidos programados: nada que predecir ni simular.", fg=typer.colors.YELLOW
         )
         return
-    next_md = int(scheduled["matchday"].min())
-    rows = scheduled[scheduled["matchday"] == next_md]
     variant = VARIANT_NO_ODDS
     if VARIANT_WITH_ODDS in bundle.variants and rows["imp_home"].notna().all():
         variant = VARIANT_WITH_ODDS
     preds = bundle.predict_matches(rows, variant)
-    persist_features(conn, rows, settings)
-    now = datetime.now(UTC).isoformat(timespec="seconds")
-    for p in preds.itertuples(index=False):
-        conn.execute(
-            "INSERT INTO predictions (match_id, model_version, created_at, p_home, p_draw, "
-            "p_away, pred_result, pred_score, expected_goals_h, expected_goals_a) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                p.match_id,
-                bundle.model_version,
-                now,
-                p.p_home,
-                p.p_draw,
-                p.p_away,
-                p.pred_result,
-                p.pred_score,
-                p.expected_goals_h,
-                p.expected_goals_a,
-            ),
-        )
-    conn.commit()
-    typer.secho(f"Jornada {next_md}: {len(preds)} predicciones persistidas.", fg=typer.colors.GREEN)
+    persist_predictions(conn, rows, preds, bundle.model_version, settings)
+    extra = rows["matchday"] != next_md
+    detalle = f" (+{int(extra.sum())} pendiente(s) de jornadas anteriores)" if extra.any() else ""
+    typer.secho(
+        f"Jornada {next_md}: {len(preds)} predicciones persistidas{detalle}.",
+        fg=typer.colors.GREEN,
+    )
 
     projection = project_standings(bundle, features, settings, settings.current_season)
     if projection is not None:
@@ -324,8 +303,7 @@ def _echo_current_season(conn: sqlite3.Connection, settings: Settings) -> None:
     row = conn.execute(
         "SELECT COALESCE(SUM(status = 'finished'), 0) AS played, "
         "COALESCE(SUM(status = 'scheduled'), 0) AS scheduled, "
-        "MAX(CASE WHEN status = 'finished' THEN matchday END) AS last_md, "
-        "MIN(CASE WHEN status = 'scheduled' THEN matchday END) AS next_md "
+        "MAX(CASE WHEN status = 'finished' THEN matchday END) AS last_md "
         "FROM matches WHERE season = ?",
         (season,),
     ).fetchone()
@@ -337,15 +315,36 @@ def _echo_current_season(conn: sqlite3.Connection, settings: Settings) -> None:
         return
     jugadas = row["last_md"] or 0
     typer.echo(f"  jornadas jugadas: {jugadas}/{settings.league.rounds} ({row['played']} partidos)")
-    if row["next_md"]:
-        n_next = conn.execute(
-            "SELECT COUNT(*) AS n FROM matches WHERE season = ? AND status = 'scheduled' "
-            "AND matchday = ?",
-            (season, row["next_md"]),
-        ).fetchone()["n"]
-        typer.echo(f"  próxima jornada: {row['next_md']} ({n_next} partidos programados)")
+    # Misma regla que `alaves predict` (ADR-031): un aplazado no es la próxima jornada.
+    import pandas as pd
+
+    from alaves_predictor.models.predict import next_round, today_utc
+
+    scheduled = pd.read_sql_query(
+        "SELECT match_id, season, matchday, date, NULL AS result FROM matches "
+        "WHERE season = ? AND status = 'scheduled'",
+        conn,
+        params=(season,),
+    )
+    next_md, next_rows = next_round(
+        scheduled, season, settings.league.matches_per_round, today_utc()
+    )
+    if next_md is not None:
+        typer.echo(f"  próxima jornada: {next_md} ({len(next_rows)} partidos a predecir)")
+    elif row["scheduled"]:
+        typer.echo("  hay programados, pero ninguno con fecha de hoy en adelante.")
     else:
         typer.echo("  sin calendario de próximos partidos.")
+    stale = conn.execute(
+        "SELECT COUNT(*) AS n FROM matches WHERE season = ? AND status = 'scheduled' AND date < ?",
+        (season, today_utc().isoformat()),
+    ).fetchone()["n"]
+    if stale:
+        typer.secho(
+            f"  {stale} programado(s) con fecha ya pasada: jugados sin resultado publicado "
+            "todavía, o aplazados sin fecha nueva. No se predicen.",
+            fg=typer.colors.YELLOW,
+        )
     n_preds = conn.execute(
         "SELECT COUNT(DISTINCT p.match_id) AS n FROM predictions p "
         "JOIN matches m ON m.match_id = p.match_id WHERE m.season = ?",
@@ -525,12 +524,11 @@ def predict(
         raise typer.Exit(code=1)
     settings = _load_settings()
     _require_db(settings)
-    from datetime import UTC, datetime
-
     import pandas as pd
 
-    from alaves_predictor.features.build import build_features, persist_features
+    from alaves_predictor.features.build import build_features
     from alaves_predictor.models.gbm_classifier import VARIANT_NO_ODDS, VARIANT_WITH_ODDS
+    from alaves_predictor.models.predict import next_round, persist_predictions, today_utc
     from alaves_predictor.models.train import load_latest_model
 
     conn = db.connect(settings.data.db_path)
@@ -544,20 +542,24 @@ def predict(
             raise typer.Exit(code=1)
 
         df = build_features(conn, settings, include_scheduled=True)
-        scheduled = df[df["result"].isna() & (df["season"] == settings.current_season)]
+        today = today_utc()
         if matchday is not None:
-            rows = scheduled[scheduled["matchday"] == matchday]
+            # jornada explícita: sus programados que aún no se han jugado
+            rows = df[
+                df["result"].isna()
+                & (df["season"] == settings.current_season)
+                & (df["matchday"] == matchday)
+                & (df["date"].astype(str) >= today.isoformat())
+            ]
         else:
-            rows = (
-                scheduled[scheduled["matchday"] == scheduled["matchday"].min()]
-                if not scheduled.empty
-                else scheduled
+            _, rows = next_round(
+                df, settings.current_season, settings.league.matches_per_round, today
             )
         if rows.empty:
             typer.secho(
-                "No hay partidos programados que predecir en la BD. El calendario "
-                f"de la {settings.current_season} se ingiere en la F7 "
-                "(`alaves ingest --matchday`).",
+                f"No hay partidos de la {settings.current_season} por jugar en la BD "
+                "(los programados con fecha ya pasada no se predicen: sería a posteriori). "
+                "Trae el calendario con `alaves ingest --matchday`.",
                 fg=typer.colors.YELLOW,
             )
             raise typer.Exit(code=1)
@@ -577,28 +579,8 @@ def predict(
         preds = bundle.predict_matches(rows, variant)
 
         # SPEC §5.5: persistir SIEMPRE antes de conocer el resultado —
-        # snapshot de features + fila por predicción, para auditoría real
-        persist_features(conn, rows, settings)
-        now = datetime.now(UTC).isoformat(timespec="seconds")
-        for p in preds.itertuples(index=False):
-            conn.execute(
-                "INSERT INTO predictions (match_id, model_version, created_at, p_home, "
-                "p_draw, p_away, pred_result, pred_score, expected_goals_h, expected_goals_a) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    p.match_id,
-                    bundle.model_version,
-                    now,
-                    p.p_home,
-                    p.p_draw,
-                    p.p_away,
-                    p.pred_result,
-                    p.pred_score,
-                    p.expected_goals_h,
-                    p.expected_goals_a,
-                ),
-            )
-        conn.commit()
+        # snapshot de features + fila por predicción (con su hash), para auditoría real
+        persist_predictions(conn, rows, preds, bundle.model_version, settings)
     finally:
         conn.close()
 

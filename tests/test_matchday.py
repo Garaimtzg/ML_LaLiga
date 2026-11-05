@@ -136,10 +136,12 @@ def test_ingest_matchday_orquesta_todo(mini_db, mini_settings, fake_fetch):
     assert counts["finished"] == 12
 
 
-def _seed_prediction(conn, settings, home, away, hg, ag, probs, status="finished"):
+def _seed_prediction(conn, settings, home, away, hg, ag, probs, status="finished", created_at=None):
     season = settings.current_season
     mid = make_match_id(season, home, away)
     now = datetime.now(UTC).isoformat()
+    # por defecto, la predicción se hizo la víspera del partido (2026-08-15)
+    created_at = created_at or "2026-08-14T10:00:00+00:00"
     db.upsert(
         conn,
         "matches",
@@ -161,7 +163,7 @@ def _seed_prediction(conn, settings, home, away, hg, ag, probs, status="finished
     conn.execute(
         "INSERT INTO predictions (match_id, model_version, created_at, p_home, p_draw, p_away, "
         "pred_result) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (mid, "v-test", now, probs[0], probs[1], probs[2], "H"),
+        (mid, "v-test", created_at, probs[0], probs[1], probs[2], "H"),
     )
     conn.commit()
 
@@ -190,6 +192,28 @@ def test_evaluate_season_sobre_predicciones_resueltas(mini_db, mini_settings):
 
     resolved = resolved_predictions(mini_db, mini_settings.current_season)
     assert set(resolved["result"]) == {"H", "D"}
+
+
+def test_evaluate_season_ignora_predicciones_posteriores_al_partido(mini_db, mini_settings):
+    """Una "predicción" guardada después del partido no es una predicción (ADR-031)."""
+    registry = TeamRegistry(mini_settings.teams)
+    registry.seed_db(mini_db)
+    _seed_prediction(mini_db, mini_settings, "alaves", "getafe", 2, 0, (0.6, 0.25, 0.15))
+    _seed_prediction(
+        mini_db,
+        mini_settings,
+        "barcelona",
+        "real-sociedad",
+        1,
+        1,
+        (0.2, 0.7, 0.1),
+        created_at="2026-08-16T09:00:00+00:00",  # el día después del partido
+    )
+    perf = evaluate_season(mini_db, mini_settings)
+    assert perf.n_resolved == 1
+    assert list(resolved_predictions(mini_db, mini_settings.current_season)["match_id"]) == [
+        make_match_id(mini_settings.current_season, "alaves", "getafe")
+    ]
 
 
 def test_evaluate_season_sin_predicciones(mini_db, mini_settings):

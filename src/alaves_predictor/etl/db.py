@@ -161,7 +161,8 @@ CREATE TABLE IF NOT EXISTS predictions (
     pred_result      TEXT NOT NULL,
     pred_score       TEXT,
     expected_goals_h REAL,
-    expected_goals_a REAL
+    expected_goals_a REAL,
+    features_hash    TEXT              -- sha256 de las features usadas (CLAUDE.md §5.5)
 );
 
 CREATE TABLE IF NOT EXISTS model_registry (
@@ -193,8 +194,22 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+# Columnas añadidas después de crearse la tabla: `CREATE TABLE IF NOT EXISTS` no
+# toca una tabla que ya existe, así que las BDs anteriores las reciben con un
+# ALTER TABLE (idempotente: solo si faltan). Tabla -> [(columna, tipo)].
+_ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "predictions": [("features_hash", "TEXT")],  # ADR-031
+}
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
+    """Crea el esquema que falte y migra las tablas antiguas (idempotente)."""
     conn.executescript(_SCHEMA)
+    for table, columns in _ADDED_COLUMNS.items():
+        present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}  # 1 = name
+        for column, sql_type in columns:
+            if column not in present:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
     conn.commit()
 
 

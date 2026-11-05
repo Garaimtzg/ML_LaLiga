@@ -31,7 +31,9 @@ def resolved_predictions(conn: sqlite3.Connection, season: str) -> pd.DataFrame:
     """Predicciones de una temporada cuyo partido ya tiene resultado real.
 
     Si un partido tiene varias predicciones (reentrenos), se queda la más
-    reciente (la vigente cuando se jugó).
+    reciente (la vigente cuando se jugó). Solo cuentan las hechas no más tarde
+    del día del partido: una posterior ya no es una predicción, y dejarla
+    entrar inflaría el rendimiento "real" (mismo criterio que `alaves validate`).
     """
     df = pd.read_sql_query(
         "SELECT p.match_id, p.model_version, p.created_at, p.p_home, p.p_draw, p.p_away, "
@@ -39,6 +41,7 @@ def resolved_predictions(conn: sqlite3.Connection, season: str) -> pd.DataFrame:
         "FROM predictions p JOIN matches m ON m.match_id = p.match_id "
         "WHERE m.season = ? AND m.status = 'finished' "
         "AND m.home_goals IS NOT NULL AND m.away_goals IS NOT NULL "
+        "AND substr(p.created_at, 1, 10) <= m.date "
         "ORDER BY p.created_at",
         conn,
         params=(season,),
