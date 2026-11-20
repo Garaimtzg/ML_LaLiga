@@ -40,9 +40,19 @@ from alaves_predictor.etl import db
 from alaves_predictor.features.build import feature_payload, persist_features
 
 
+def now_utc() -> datetime:
+    """Instante actual en UTC: el sello `created_at` de cada predicción.
+
+    Un único punto de lectura del reloj para todo el módulo; los tests que
+    simulan una fecha lo sustituyen aquí (en producción es siempre el real: no
+    hay forma de guardar una predicción con otra fecha).
+    """
+    return datetime.now(UTC)
+
+
 def today_utc() -> date:
     """Fecha de hoy en UTC: la misma referencia que `created_at` y `alaves validate`."""
-    return datetime.now(UTC).date()
+    return now_utc().date()
 
 
 def next_round(
@@ -98,7 +108,7 @@ def persist_predictions(
         row["match_id"]: features_hash(feature_payload(row))
         for row in rows.to_dict(orient="records")
     }
-    now = datetime.now(UTC).isoformat(timespec="seconds")
+    now = now_utc().isoformat(timespec="seconds")
     for p in preds.itertuples(index=False):
         conn.execute(
             "INSERT INTO predictions (match_id, model_version, created_at, p_home, p_draw, "

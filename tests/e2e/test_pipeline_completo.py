@@ -18,7 +18,7 @@ Tarda ~30 s. Para saltarlo: `uv run pytest -m "not e2e"`.
 from __future__ import annotations
 
 import types
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -29,6 +29,7 @@ from alaves_predictor.etl.ingest import ingest_historical, ingest_matchday
 from alaves_predictor.etl.validate import validate_db
 from alaves_predictor.evaluation.season import evaluate_season
 from alaves_predictor.features.build import build_features, feature_columns
+from alaves_predictor.models import predict
 from alaves_predictor.models.gbm_classifier import VARIANT_NO_ODDS
 from alaves_predictor.models.predict import next_round, persist_predictions
 from alaves_predictor.models.train import load_latest_model, register_model, train_models
@@ -69,8 +70,16 @@ class _Internet:
         )
 
     def go_to(self, today: date) -> None:
+        """Avanza el calendario: lo que sirve "internet" y la hora del reloj.
+
+        El reloj importa: las predicciones se sellan con él y la evaluación
+        descarta las posteriores al partido. Con el reloj real el test solo
+        pasaba mientras la fecha de hoy fuera anterior a la J13 sintética.
+        """
         self.today = today
         self._web = liga_sintetica.build_web(today)
+        moment = datetime(today.year, today.month, today.day, 10, 0, tzinfo=UTC)
+        self._monkeypatch.setattr(predict, "now_utc", lambda: moment)
 
     def _download(self, url: str, headers, impersonate: bool) -> tuple[int, bytes]:
         return self._web.get(url, (404, b""))
