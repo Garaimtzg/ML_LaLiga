@@ -104,6 +104,22 @@ def _current_season_checks(conn: sqlite3.Connection, settings: Settings) -> list
         )
     )
 
+    # Ningún partido puede tener fecha de otra temporada: delataría una fuente
+    # que sirvió datos de otro año (una captura vieja de FBref, ADR-032).
+    first, last = league.season_bounds(season)
+    stray = conn.execute(
+        "SELECT COUNT(*) AS n FROM matches WHERE season = ? AND (date < ? OR date > ?)",
+        (season, first.isoformat(), last.isoformat()),
+    ).fetchone()["n"]
+    results.append(
+        _check(
+            f"{prefix} fechas dentro de la temporada ({first} → {last})",
+            stray == 0,
+            f"{stray} partidos con fecha de otra temporada"
+            + (" (`alaves ingest --matchday` los borra)" if stray else ""),
+        )
+    )
+
     # Las jornadas jugadas deben ir 1..N sin huecos; un hueco delata una
     # ingesta a medias o un aplazamiento mal absorbido.
     md = [

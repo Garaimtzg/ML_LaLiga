@@ -64,7 +64,7 @@ def mini_settings(tmp_path: Path) -> Settings:
     """Settings de una mini-liga de 4 equipos con rutas en tmp."""
     return Settings(
         focus_team="alaves",
-        current_season="2019-20",
+        current_season="2026-27",
         league=LeagueConfig(teams_per_season=4),
         historical_seasons=["2018-19"],
         data=DataConfig(

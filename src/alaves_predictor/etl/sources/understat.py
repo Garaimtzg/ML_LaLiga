@@ -85,6 +85,24 @@ def api_headers(season: str, cfg: UnderstatConfig) -> dict[str, str]:
     }
 
 
+def _not_json_message(text: str, exc: json.JSONDecodeError) -> str:
+    """Error de "no es JSON" que dice QUÉ llegó, que es lo único accionable.
+
+    "Expecting value: line 1 column 1" no distingue una página de bloqueo, un
+    error del servidor o un cambio de la API; el principio de la respuesta, sí.
+    """
+    start = " ".join(text.split())[:160]
+    kind = (
+        "una página HTML (bloqueo anti-bot, error del servidor o la web ha cambiado)"
+        if start.startswith("<")
+        else "algo que no es JSON"
+    )
+    return (
+        f"getLeagueData de Understat no devolvió JSON válido ({exc}): respondió {kind}. "
+        f"Empieza así: {start!r}"
+    )
+
+
 def _entries_from(data: object) -> list[dict]:
     """Localiza la lista de partidos dentro de la respuesta, sea cual sea el sobre."""
     if isinstance(data, list):
@@ -106,9 +124,7 @@ def parse_league_data(text: str) -> list[UnderstatMatch]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise SourceFormatError(
-            f"getLeagueData de Understat no devolvió JSON válido: {exc}"
-        ) from exc
+        raise SourceFormatError(_not_json_message(text, exc)) from exc
 
     matches: list[UnderstatMatch] = []
     for entry in _entries_from(data):
@@ -150,9 +166,7 @@ def parse_league_fixtures(text: str) -> list[UnderstatFixture]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise SourceFormatError(
-            f"getLeagueData de Understat no devolvió JSON válido: {exc}"
-        ) from exc
+        raise SourceFormatError(_not_json_message(text, exc)) from exc
 
     fixtures: list[UnderstatFixture] = []
     for entry in _entries_from(data):

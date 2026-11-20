@@ -8,6 +8,7 @@ y la expone como objetos tipados.
 from __future__ import annotations
 
 import tomllib
+from datetime import date
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -26,6 +27,21 @@ class LeagueConfig(BaseModel):
             "descenso": [18, 20],
         }
     )
+
+    # Fechas que puede tener un partido de la temporada "AAAA-BB": del día
+    # `season_start` (MM-DD) del año AAAA al `season_end` del año siguiente.
+    # Sirve para rechazar datos de OTRA temporada que una fuente sirva por error
+    # (p. ej. una captura vieja de FBref, ADR-032). El margen hasta el 31 de
+    # julio cubre la 2019-20, que acabó el 19-jul-2020 por la pandemia.
+    season_start: str = "07-01"
+    season_end: str = "07-31"
+
+    def season_bounds(self, season: str) -> tuple[date, date]:
+        """(primer, último) día en que puede jugarse un partido de `season`."""
+        year = int(season.split("-")[0])
+        start_month, start_day = (int(x) for x in self.season_start.split("-"))
+        end_month, end_day = (int(x) for x in self.season_end.split("-"))
+        return date(year, start_month, start_day), date(year + 1, end_month, end_day)
 
     @property
     def rounds(self) -> int:

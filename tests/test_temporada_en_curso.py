@@ -622,7 +622,7 @@ def test_el_error_de_fbref_dice_que_urls_probo(mini_settings, tmp_path, monkeypa
 
     mensaje = str(exc.value)
     assert "/comps/12/schedule/" in mensaje  # la URL sin año, la que se prueba primero
-    assert "2019-2020" in mensaje  # y la versionada
+    assert "2026-2027" in mensaje  # y la versionada
     assert "Wayback" in mensaje
 
 

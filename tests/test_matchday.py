@@ -126,10 +126,14 @@ def test_ingest_matchday_orquesta_todo(mini_db, mini_settings, fake_fetch):
     # los fixtures reusan pares ya jugados en la mini-liga: se saltan por estar
     # 'finished' (el resultado manda sobre el calendario). Cero programados nuevos.
     assert report.scheduled == 0
-    # Ninguna fuente falló, pero la BD se queda sin partidos por jugar: eso se
-    # avisa siempre, porque sin calendario no hay nada que predecir ni simular.
-    assert len(report.warnings) == 1
-    assert "NINGÚN partido por jugar" in report.warnings[0]
+    # La mini-liga sirve datos de 2018-19 como si fueran de la temporada en
+    # curso: el partido por jugar de Understat (mayo de 2019) es de otra
+    # temporada y se descarta con aviso, no se cuela en el calendario (ADR-032).
+    # Y la BD se queda sin partidos por jugar: eso se avisa siempre, porque sin
+    # calendario no hay nada que predecir ni simular.
+    assert len(report.warnings) == 2
+    assert "understat: descartados 1 partidos" in report.warnings[0]
+    assert "NINGÚN partido por jugar" in report.warnings[1]
     counts = dict(
         mini_db.execute("SELECT status, COUNT(*) n FROM matches GROUP BY status").fetchall()
     )
