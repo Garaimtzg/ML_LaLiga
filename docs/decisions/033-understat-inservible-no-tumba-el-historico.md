@@ -12,11 +12,13 @@ una página HTML (...). Empieza así: '<!DOCTYPE html> <html> <head>
 <title>Understat.com</title> ...'
 ```
 
-Understat responde **su web normal** en la ruta de la API interna
-`getLeagueData` (ADR-011). No es un bloqueo anti-bot: lo más probable es que
-haya vuelto a cambiar cómo carga los datos, como ya hizo en diciembre de 2025
-(ADR-008/011). Averiguar la ruta nueva exige inspeccionar la web desde una
-máquina con acceso, y mientras tanto había tres problemas:
+Understat responde una página HTML en la ruta de la API interna
+`getLeagueData` (ADR-011). Al principio se supuso un cambio de API, como el de
+diciembre de 2025 (ADR-008/011). Un diagnóstico posterior lo descartó: Understat
+servía **la misma página de mantenimiento** (26.719 bytes idénticos, texto
+visible "We will come back soon") para la web y para cualquier ruta de la API.
+No hay nada que adaptar; hay que esperar a que vuelva. Mientras tanto había
+cuatro problemas:
 
 1. **`alaves ingest --historical` abortaba entero.** Understat solo rellena el
    xG que FBref no trae (las temporadas recientes), pero su fallo tiraba las
@@ -29,6 +31,9 @@ máquina con acceso, y mientras tanto había tres problemas:
    Monte Carlo simulaba esos diez y presentaba el resultado como la
    clasificación final.
 
+4. **El aviso no decía la causa.** Mostraba el principio del HTML
+   ("<!DOCTYPE html> <html> <head>..."), no lo que la página decía.
+
 ## Decisión
 
 - **Ingesta histórica**: un fallo de descarga o de formato de Understat ya no
@@ -39,6 +44,8 @@ máquina con acceso, y mientras tanto había tres problemas:
   poder abrirla. Un marcador discrepante entre fuentes (`SourceConsistencyError`)
   **sigue abortando**: eso no es una fuente caída, son datos en conflicto
   (CLAUDE.md §6). `alaves validate` sigue marcando la cobertura de xG que falte.
+- **Aviso de Understat**: si llega HTML, se muestra su texto visible (sin CSS
+  ni JavaScript), que es donde está la causa: "We will come back soon".
 - **`alaves sources`** pasa cada respuesta por el mismo parser que usa la
   ingesta. Una fuente que responde algo ilegible sale como **NO SIRVE**, con el
   motivo.
@@ -61,6 +68,6 @@ máquina con acceso, y mientras tanto había tres problemas:
 - Con Understat inservible se puede tener la BD histórica, entrenar y predecir
   la próxima jornada. Faltan el xG de las temporadas que dependan de ella y la
   proyección de la clasificación completa, y cada salida lo dice.
-- **Pendiente**: adaptar el adaptador de Understat a su nueva forma de servir
-  los datos, cuando se conozca. Eso será otro ADR; este solo hace que su caída
-  no arrastre al resto.
+- Cuando Understat vuelva, basta relanzar `alaves ingest --historical` (rellena
+  el xG que falte; lo demás no se descarga otra vez) y el ciclo semanal. Para
+  saber si ha vuelto: `alaves sources` (su línea pasa de NO SIRVE a OK).

@@ -214,3 +214,22 @@ def test_la_proyeccion_con_calendario_incompleto_lo_dice() -> None:
     aviso = projection(241).warning()
     assert aviso is not None
     assert "faltan 241 partidos" in aviso and "NO son la clasificación final" in aviso
+
+
+def test_understat_en_mantenimiento_se_ve_en_el_aviso() -> None:
+    """Nov-2026: Understat servía su página de mantenimiento en todas las URLs.
+
+    El principio del HTML no decía nada; el texto visible lo decía todo.
+    """
+    maintenance = (
+        "<!DOCTYPE html>\n<html>\n    <head>\n\t\t<title>Understat.com</title>\n"
+        '<meta charset="UTF-8" />\n<style>body { background: #333; }</style>\n'
+        "<script>var x = 1;</script></head>\n"
+        '<body><div class="msg">We will come back soon</div></body></html>'
+    )
+    with pytest.raises(SourceFormatError) as exc:
+        understat.parse_league_data(maintenance)
+    message = str(exc.value)
+    assert "We will come back soon" in message
+    assert "mantenimiento" in message
+    assert "background" not in message and "var x" not in message  # ni CSS ni JS
