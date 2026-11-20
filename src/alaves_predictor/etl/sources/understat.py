@@ -19,6 +19,7 @@ prevista para el modo temporada (F7).
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime
 from urllib.parse import quote
 
@@ -89,17 +90,23 @@ def _not_json_message(text: str, exc: json.JSONDecodeError) -> str:
     """Error de "no es JSON" que dice QUÉ llegó, que es lo único accionable.
 
     "Expecting value: line 1 column 1" no distingue una página de bloqueo, un
-    error del servidor o un cambio de la API; el principio de la respuesta, sí.
+    error del servidor o un mantenimiento. Si llegó HTML se muestra su texto
+    VISIBLE, no su código: en nov-2026 el principio del HTML solo enseñaba
+    "<!DOCTYPE html> <html> <head>...", y el texto visible decía la causa entera,
+    "We will come back soon" (Understat en mantenimiento, ADR-033).
     """
-    start = " ".join(text.split())[:160]
-    kind = (
-        "una página HTML (bloqueo anti-bot, error del servidor o la web ha cambiado)"
-        if start.startswith("<")
-        else "algo que no es JSON"
-    )
+    compact = " ".join(text.split())
+    if not compact.startswith("<"):
+        return (
+            f"getLeagueData de Understat no devolvió JSON válido ({exc}): respondió algo "
+            f"que no es JSON. Empieza así: {compact[:160]!r}"
+        )
+    without_code = re.sub(r"<(script|style)\b.*?</\1>", " ", text, flags=re.I | re.S)
+    visible = " ".join(re.sub(r"<[^>]+>", " ", without_code).split())
     return (
-        f"getLeagueData de Understat no devolvió JSON válido ({exc}): respondió {kind}. "
-        f"Empieza así: {start!r}"
+        f"getLeagueData de Understat no devolvió JSON válido ({exc}): respondió una página "
+        "HTML en vez de datos (mantenimiento, bloqueo anti-bot o cambio de la web). "
+        f"La página dice: {visible[:200]!r}"
     )
 
 
