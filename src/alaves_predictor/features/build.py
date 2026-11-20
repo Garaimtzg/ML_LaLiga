@@ -13,6 +13,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from alaves_predictor.config import Settings
@@ -50,12 +51,22 @@ def _clubelo_asof(conn: sqlite3.Connection, matches: pd.DataFrame) -> pd.DataFra
         "SELECT team_id, date, elo_clubelo FROM elo WHERE elo_clubelo IS NOT NULL ORDER BY date",
         conn,
     )
-    elo["date"] = pd.to_datetime(elo["date"])
     out = matches.copy()
+    if elo.empty:
+        # Sin ningún rating de ClubElo (BD recién creada con la fuente caída):
+        # las features de Elo quedan vacías y el resto sigue. Sin esta salida,
+        # merge_asof abortaba el ciclo entero: una tabla vacía llega con
+        # team_id de tipo `object` y los ids de los partidos son `str`.
+        out["elo_clubelo_home"] = np.nan
+        out["elo_clubelo_away"] = np.nan
+        return out
+    elo["date"] = pd.to_datetime(elo["date"])
+    elo["team_id"] = elo["team_id"].astype(str)
     out["as_of_ts"] = pd.to_datetime(out["date"]) - timedelta(days=1)
     for side in ("home", "away"):
+        left = out[["match_id", "as_of_ts", f"{side}_id"]].astype({f"{side}_id": str})
         merged = pd.merge_asof(
-            out[["match_id", "as_of_ts", f"{side}_id"]].sort_values("as_of_ts"),
+            left.sort_values("as_of_ts"),
             elo.rename(columns={"team_id": f"{side}_id", "elo_clubelo": f"elo_clubelo_{side}"}),
             left_on="as_of_ts",
             right_on="date",
