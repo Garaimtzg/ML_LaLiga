@@ -141,6 +141,7 @@ def test_pipeline_completo_sobre_liga_sintetica(settings, monkeypatch) -> None:
         projection = project_standings(bundle, features, settings, settings.current_season, n=500)
         assert projection is not None and len(projection.teams) == 20
         assert (projection.n_played, projection.n_remaining) == (119, 261)
+        assert projection.warning() is None  # calendario completo: sin aviso
         p_title = sum(projection.result.prob_zone(t, "titulo") for t in projection.teams)
         assert p_title == pytest.approx(1.0)
 

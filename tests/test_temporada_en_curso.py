@@ -859,7 +859,13 @@ def test_el_comando_sources_prueba_todas_las_fuentes(monkeypatch, tmp_path):
     def _fetch(url, cache_path, **kwargs):
         if "clubelo" in url:
             raise SourceDownloadError("Could not connect to server")
-        return "contenido de prueba"
+        if "understat" in url:  # lo que pasó de verdad: su web normal en la ruta de la API
+            return "<!DOCTYPE html><html><head><title>Understat.com</title></head></html>"
+        if "fbref" in url:
+            return _FBREF_FIXTURES
+        if "fixtures.csv" in url:
+            return (FIXTURES / "football_data_fixtures_mini.csv").read_text(encoding="utf-8")
+        return (FIXTURES / "football_data_mini.csv").read_text(encoding="utf-8")
 
     monkeypatch.setattr("alaves_predictor.etl.http_cache.fetch_text", _fetch)
     result = CliRunner().invoke(cli.app, ["sources"])
@@ -869,6 +875,11 @@ def test_el_comando_sources_prueba_todas_las_fuentes(monkeypatch, tmp_path):
         assert fuente in result.stdout
     assert "FALLA" in result.stdout and "OK" in result.stdout
     assert "Could not connect" in result.stdout  # el motivo, no solo el estado
+    # responder no basta: Understat sirviendo HTML es "NO SIRVE", no "OK" (ADR-033)
+    understat_line = next(line for line in result.stdout.splitlines() if "understat" in line)
+    assert "NO SIRVE" in understat_line
+    assert "Understat.com" in result.stdout  # y se ve qué respondió
+    assert "2 fuente(s) caída(s) o inservible(s)" in result.stdout
 
 
 def test_la_jornada_vieja_de_un_programado_no_sobrevive(

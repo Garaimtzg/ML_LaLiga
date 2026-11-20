@@ -269,6 +269,62 @@ def test_relleno_understat_marcador_discrepante_aborta(
         conn.close()
 
 
+_UNDERSTAT_WEB = (
+    '<!DOCTYPE html>\n<html>\n<head>\n<title>Understat.com</title>\n<meta charset="UTF-8" />'
+)
+
+
+def _understat_sirve_su_web(fake_fetch, monkeypatch) -> None:
+    """Lo que pasó de verdad (nov-2026): getLeagueData devuelve la web normal."""
+    import alaves_predictor.etl.ingest as ingest_mod
+
+    def _fetch(url, cache_path, **kwargs):
+        if "us.test" in url:
+            return _UNDERSTAT_WEB
+        return fake_fetch(url, cache_path, **kwargs)
+
+    monkeypatch.setattr(ingest_mod, "fetch_text", _fetch)
+
+
+def test_understat_inservible_no_aborta_la_ingesta_historica(
+    mini_settings, fake_fetch, monkeypatch
+) -> None:
+    """Antes, el xG de UNA temporada tiraba la ingesta entera (ADR-033)."""
+    _cache_fbref_sin_xg(mini_settings)
+    _understat_sirve_su_web(fake_fetch, monkeypatch)
+    conn = db.connect(mini_settings.data.db_path)
+    try:
+        report = ingest_historical(conn, mini_settings)
+        assert report.matches_by_season == {"2018-19": 12}  # lo demás se guarda
+        assert sum(report.elo_rows_by_team.values()) > 0  # Elo incluido
+        assert report.xg_matched_by_season == {"2018-19": 0}
+        assert list(report.incomplete_xg) == ["2018-19"]
+        motivo = report.incomplete_xg["2018-19"]
+        assert "Understat.com" in motivo  # qué respondió
+        assert "understat" in motivo and ".json" in motivo  # y dónde quedó guardado
+        failed = {r.name for r in validate_db(conn, mini_settings) if not r.passed}
+        assert failed == {"[2018-19] cobertura de xG"}  # validate sí lo marca
+    finally:
+        conn.close()
+
+
+def test_ingesta_historica_incompleta_sale_con_error_y_explica(
+    mini_settings, fake_fetch, monkeypatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from alaves_predictor import cli
+
+    _cache_fbref_sin_xg(mini_settings)
+    _understat_sirve_su_web(fake_fetch, monkeypatch)
+    monkeypatch.setattr(cli, "_load_settings", lambda: mini_settings)
+    result = CliRunner().invoke(cli.app, ["ingest", "--historical"])
+    assert result.exit_code == 1
+    assert "INGESTA INCOMPLETA" in result.output
+    assert "2018-19" in result.output and "Understat.com" in result.output
+    assert "relanza `alaves ingest --historical`" in result.output
+
+
 def test_fbref_y_wayback_bloqueados_explica_snapshot_manual(
     mini_settings, fake_fetch, monkeypatch
 ) -> None:

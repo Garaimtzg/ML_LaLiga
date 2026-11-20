@@ -44,6 +44,9 @@ class IngestReport:
     xg_matched_by_season: dict[str, int] = field(default_factory=dict)
     elo_rows_by_team: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    # Temporadas con el xG sin completar porque Understat no respondió bien ->
+    # motivo. La ingesta sigue con el resto, pero termina como INCOMPLETA.
+    incomplete_xg: dict[str, str] = field(default_factory=dict)
 
 
 def make_match_id(season: str, home_id: str, away_id: str) -> str:
@@ -607,9 +610,11 @@ def ingest_understat_xg(
     )
     try:
         us_matches = understat.parse_league_data(text)
-    except SourceFormatError:
+    except SourceFormatError as first_error:
         if not (had_cache and not force):
-            raise
+            # La respuesta queda en la cache: con su ruta se puede abrir y ver
+            # qué sirvió Understat en vez de los datos.
+            raise SourceFormatError(f"{first_error} [respuesta en {cache}]") from first_error
         # cache envenenada de una ejecución anterior: re-descarga una vez
         text = fetch_text(
             url,
@@ -618,7 +623,10 @@ def ingest_understat_xg(
             force=True,
             headers=understat.api_headers(season, cfg),
         )
-        us_matches = understat.parse_league_data(text)
+        try:
+            us_matches = understat.parse_league_data(text)
+        except SourceFormatError as exc:
+            raise SourceFormatError(f"{exc} [respuesta en {cache}]") from exc
     now = datetime.now(UTC).isoformat()
 
     filled = 0
@@ -1245,11 +1253,20 @@ def ingest_historical(
         # se mide siempre contra la BD, no contra lo aportado en esta pasada:
         # en re-ejecuciones el xG ya está almacenado y no hay nada que rellenar.
         if _xg_coverage(conn, season) < n_matches:
-            filled = ingest_understat_xg(conn, season, settings, registry, force=force)
-            if filled:
-                report.warnings.append(
-                    f"{season}: xG de {filled} partidos rellenado con Understat."
-                )
+            # Understat caído o cambiado NO aborta la ingesta entera: sin esto
+            # se perdían las ocho temporadas (resultados, cuotas, Elo) por el
+            # xG de una o dos. Se sigue, y la ingesta termina como INCOMPLETA
+            # (ADR-033). Un marcador discrepante (SourceConsistencyError) sí
+            # aborta: eso ya no es una fuente caída, son datos en conflicto.
+            try:
+                filled = ingest_understat_xg(conn, season, settings, registry, force=force)
+            except (SourceDownloadError, SourceFormatError) as exc:
+                report.incomplete_xg[season] = str(exc)
+            else:
+                if filled:
+                    report.warnings.append(
+                        f"{season}: xG de {filled} partidos rellenado con Understat."
+                    )
         n_xg = _xg_coverage(conn, season)
         report.xg_matched_by_season[season] = n_xg
         conn.commit()

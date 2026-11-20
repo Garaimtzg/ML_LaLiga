@@ -8,6 +8,7 @@ report --importance (F5). La superficie del CLI coincide con SPEC §10.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -87,6 +88,24 @@ def ingest(
     typer.echo(f"  Elo (ClubElo): {total_elo} filas para {len(report.elo_rows_by_team)} equipos")
     for warning in report.warnings:
         typer.secho(f"  AVISO: {warning}", fg=typer.colors.YELLOW)
+    if report.incomplete_xg:
+        seasons = ", ".join(report.incomplete_xg)
+        typer.secho(
+            f"INGESTA INCOMPLETA: sin xG completo en {seasons}, porque Understat no da los "
+            f"datos. Motivo: {next(iter(report.incomplete_xg.values()))}",
+            fg=typer.colors.RED,
+            bold=True,
+            err=True,
+        )
+        typer.secho(
+            "Todo lo demás está guardado (resultados, cuotas, xG de FBref, Elo): puedes "
+            "entrenar, pero `alaves validate` fallará en la cobertura de xG hasta "
+            "completarlo. Cuando Understat vuelva a dar datos, relanza `alaves ingest "
+            "--historical`: lo ya descargado no se repite.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
     typer.echo("Ejecuta `alaves validate` para certificar la BD.")
 
 
@@ -214,7 +233,9 @@ def _predict_and_simulate_next(conn, settings, bundle, features) -> None:
     )
 
     projection = project_standings(bundle, features, settings, settings.current_season)
-    if projection is not None:
+    if projection is not None and projection.warning():
+        typer.secho(f"AVISO: {projection.warning()}", fg=typer.colors.YELLOW)
+    elif projection is not None:
         focus = settings.focus_team
         r = projection.result
         if focus in projection.teams:
@@ -250,32 +271,69 @@ def sources() -> None:
     )
     focus_alias = settings.teams[settings.focus_team].aliases_for("clubelo")[0]
 
-    # (etiqueta, url, kwargs de fetch_text). El orden es el del ciclo semanal.
-    probes: list[tuple[str, str, dict]] = [
-        ("football-data resultados", football_data.csv_url(season, fd), {"encoding": "latin-1"}),
-        ("football-data calendario", football_data.fixtures_url(fd), {}),
-        ("fbref (URL sin año)", fbref.current_schedule_url(fb), {"impersonate": True}),
-        ("fbref (URL versionada)", fbref.schedule_url(season, fb), {"impersonate": True}),
+    # (etiqueta, url, kwargs de fetch_text, comprobación del contenido). El orden
+    # es el del ciclo semanal. Que una fuente responda no basta: Understat llegó
+    # a servir su web normal en la ruta de la API, y aquí salía "OK" (ADR-033).
+    # Cada fuente se pasa por su propio parser, el mismo que usa la ingesta.
+    probes: list[tuple[str, str, dict, Callable[[str], object]]] = [
+        (
+            "football-data resultados",
+            football_data.csv_url(season, fd),
+            {"encoding": "latin-1"},
+            football_data.parse_csv,
+        ),
+        (
+            "football-data calendario",
+            football_data.fixtures_url(fd),
+            {},
+            lambda text: football_data.parse_fixtures(text, fd.division),
+        ),
+        (
+            "fbref (URL sin año)",
+            fbref.current_schedule_url(fb),
+            {"impersonate": True},
+            fbref.parse_fixtures,
+        ),
+        (
+            "fbref (URL versionada)",
+            fbref.schedule_url(season, fb),
+            {"impersonate": True},
+            fbref.parse_fixtures,
+        ),
         (
             "understat xG + calendario",
             understat.league_data_url(season, us),
             {"headers": understat.api_headers(season, us)},
+            understat.parse_league_fixtures,
         ),
-        ("clubelo (equipo foco)", clubelo.club_url(focus_alias, ce), {}),
+        (
+            "clubelo (equipo foco)",
+            clubelo.club_url(focus_alias, ce),
+            {},
+            lambda text: clubelo.parse_csv(text, focus_alias),
+        ),
     ]
 
     typer.secho(f"Probando las fuentes de datos ({season}):", bold=True)
     caidas = 0
     tmp = settings.data.raw_dir / "_diagnostico"
-    for label, url, kwargs in probes:
+    for label, url, kwargs, check in probes:
         started = time.monotonic()
         try:
             text = fetch_text(url, tmp / "probe.tmp", rate_limit_seconds=0.0, force=True, **kwargs)
-            estado, color, detalle = "OK", typer.colors.GREEN, f"{len(text):,} bytes"
         except ETLError as exc:
             caidas += 1
             estado, color, detalle = "FALLA", typer.colors.RED, str(exc)
-        typer.secho(f"  {estado:6s} {label}  ({time.monotonic() - started:.1f} s)", fg=color)
+        else:
+            try:
+                check(text)
+                estado, color, detalle = "OK", typer.colors.GREEN, f"{len(text):,} bytes"
+            except ETLError as exc:
+                # responde, pero lo que sirve no se puede leer: tan inservible como caída
+                caidas += 1
+                estado, color = "NO SIRVE", typer.colors.RED
+                detalle = f"responde ({len(text):,} bytes), pero no se puede leer: {exc}"
+        typer.secho(f"  {estado:8s} {label}  ({time.monotonic() - started:.1f} s)", fg=color)
         typer.echo(f"         {url}")
         typer.echo(f"         {detalle}")
     if tmp.exists():
@@ -285,7 +343,7 @@ def sources() -> None:
 
     if caidas:
         typer.secho(
-            f"{caidas} fuente(s) sin responder. El ciclo semanal sigue funcionando "
+            f"{caidas} fuente(s) caída(s) o inservible(s). El ciclo semanal sigue funcionando "
             "mientras otra cubra el mismo dato (ADR-029/030).",
             fg=typer.colors.YELLOW,
         )
@@ -683,6 +741,8 @@ def simulate(
         f"Simulando {target_season} desde {projection.n_played} partidos jugados y "
         f"{projection.n_remaining} por jugar ({n} simulaciones, variante {projection.variant})..."
     )
+    if projection.warning():
+        typer.secho(f"AVISO: {projection.warning()}", fg=typer.colors.YELLOW, bold=True)
 
     ranked = sorted(teams, key=result.expected_position)
     header = f"{'#':>2} {'Equipo':22} {'Pts':>5} {'Pos':>4}  {'Título':>6} {'Champ':>6} {'Eur':>5} {'Desc':>6}"  # noqa: E501

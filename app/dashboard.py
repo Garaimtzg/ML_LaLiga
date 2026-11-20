@@ -348,6 +348,8 @@ def page_projection(bundle, features, settings):
         f"{projection.n_played} jugados · {projection.n_remaining} por simular · "
         f"{n} simulaciones · variante {projection.variant}"
     )
+    if projection.warning():
+        st.warning(projection.warning())
 
     table = dd.projection_table(projection, settings)
     zones = settings.league.zones
