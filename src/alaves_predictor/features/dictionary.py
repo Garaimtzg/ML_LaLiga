@@ -76,7 +76,7 @@ def describe(feature: str) -> str | None:
         scope = f" solo en su condición ({'casa' if side == 'home' else 'fuera'})" if venue else ""
         return (
             f"Media de {_STAT[stat]} del {_SIDE[side]} en sus últimos "
-            f"{window} partidos{scope} (siempre anteriores al actual)"
+            f"{window} partidos jugados{scope} (siempre anteriores al actual)"
         )
     return None
 

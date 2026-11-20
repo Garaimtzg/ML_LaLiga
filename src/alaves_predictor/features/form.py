@@ -52,8 +52,24 @@ def long_format(matches: pd.DataFrame) -> pd.DataFrame:
 
 
 def _shifted_rolling_mean(group: pd.Series, window: int) -> pd.Series:
-    # shift(1): el partido actual no se ve a sí mismo (anti-leakage)
-    return group.shift(1).rolling(window, min_periods=1).mean()
+    """Media de los `window` últimos valores CONOCIDOS anteriores a cada partido.
+
+    1. La media se calcula solo sobre los valores no nulos (partidos jugados),
+       así que la ventana son siempre los `window` últimos partidos de verdad.
+    2. `shift(1)` sobre el índice completo: la fila de un partido ve la media
+       hasta el partido ANTERIOR, nunca el propio (anti-leakage).
+    3. `ffill`: un partido programado (o un dato faltante) no tiene valor
+       propio, así que hereda la última media conocida, igual que las rachas.
+
+    Sin el paso 1 la ventana contaba los programados como huecos: proyectando
+    la temporada, a 6 jornadas vista la media de 5 partidos ya no tenía ningún
+    valor y desde ahí casi todas las features de forma iban vacías, un caso
+    que el modelo no vio nunca al entrenar. Sin huecos (el histórico, todo
+    jugado y con xG) el resultado es idéntico al de la versión anterior,
+    `shift(1).rolling(window, min_periods=1).mean()`.
+    """
+    known = group.dropna().rolling(window, min_periods=1).mean()
+    return known.reindex(group.index).shift(1).ffill()
 
 
 def add_rolling_form(long_df: pd.DataFrame, windows: list[int]) -> pd.DataFrame:

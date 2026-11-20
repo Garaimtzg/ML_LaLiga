@@ -66,6 +66,24 @@ def test_fbref_parsea_fixture() -> None:
     assert first.away_xg == pytest.approx(2.0)
 
 
+def test_fbref_ignora_cabeceras_repetidas() -> None:
+    """FBref repite la cabecera dentro del tbody (fila `thead`) en tablas largas.
+
+    Antes se leía como un partido y su marcador "Score" abortaba la ingesta.
+    """
+    header = (
+        '<tr class="thead"><th data-stat="gameweek">Wk</th><th data-stat="date">Date</th>'
+        '<th data-stat="home_team">Home</th><th data-stat="home_xg">xG</th>'
+        '<th data-stat="score">Score</th><th data-stat="away_xg">xG</th>'
+        '<th data-stat="away_team">Away</th></tr>'
+    )
+    html = (FIXTURES / "fbref_schedule_mini.html").read_text()
+    html = html.replace('<tr class="spacer partial_table">', header + '<tr class="spacer">', 1)
+    assert "Score</th>" in html.split("<tbody>")[1]  # la cabecera está dentro del tbody
+    assert len(fbref.parse_schedule(html)) == 12
+    assert len(fbref.parse_fixtures(html)) == 1  # solo el partido por jugar
+
+
 def test_fbref_sin_tabla_falla_ruidosamente() -> None:
     with pytest.raises(SourceFormatError, match="sched"):
         fbref.parse_schedule("<html><body>Attention Required! | Cloudflare</body></html>")

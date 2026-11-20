@@ -65,9 +65,15 @@ select = [
 ]
 
 [tool.mypy]
-python_version = "3.11"
+# Sin `python_version` fijo: mypy analiza con la versión del intérprete del
+# entorno. Fijarla a 3.11 rompía `mypy src` en 3.12+, porque uv instala ahí
+# numpy 2.5 / scipy 1.18 (requieren 3.12) y sus stubs usan la sentencia `type`,
+# que mypy rechaza al analizar "como si" fuera 3.11.
 ignore_missing_imports = true
 check_untyped_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "e2e: pipeline completo sobre la liga sintética de tests/e2e (~30 s; -m 'not e2e' lo salta)",
+]

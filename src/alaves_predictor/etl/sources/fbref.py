@@ -116,6 +116,16 @@ def parse_cdx_timestamps(text: str) -> list[str]:
     return sorted(stamps, reverse=True)
 
 
+def _is_repeated_header(row: Tag) -> bool:
+    """Cabecera repetida dentro del tbody (FBref la intercala en tablas largas).
+
+    Lleva clase `thead` y celdas con los mismos `data-stat` que una fila de
+    datos ("Home", "Score"...), así que sin este filtro se leía como un partido
+    y el marcador "Score" abortaba la ingesta entera.
+    """
+    return "thead" in (row.get("class") or [])
+
+
 def _row_cells(row: Tag) -> dict[str, str]:
     """Mapea data-stat -> texto de la celda para una fila de la tabla."""
     return {
@@ -140,7 +150,7 @@ def parse_schedule(html: str) -> list[FBrefMatch]:
 
     matches: list[FBrefMatch] = []
     for row in body.find_all("tr"):
-        if not isinstance(row, Tag):
+        if not isinstance(row, Tag) or _is_repeated_header(row):
             continue
         cells = _row_cells(row)
         score_text = cells.get("score", "")
@@ -206,7 +216,7 @@ def parse_fixtures(html: str) -> list[FBrefFixture]:
 
     fixtures: list[FBrefFixture] = []
     for row in body.find_all("tr"):
-        if not isinstance(row, Tag):
+        if not isinstance(row, Tag) or _is_repeated_header(row):
             continue
         cells = _row_cells(row)
         # Sin equipo local es una fila espaciadora; con marcador, ya se jugó.
