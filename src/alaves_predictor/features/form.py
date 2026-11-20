@@ -51,39 +51,51 @@ def long_format(matches: pd.DataFrame) -> pd.DataFrame:
     return long_df.sort_values(["team", "date", "match_id"]).reset_index(drop=True)
 
 
-def _shifted_rolling_mean(group: pd.Series, window: int) -> pd.Series:
-    """Media de los `window` últimos valores CONOCIDOS anteriores a cada partido.
+def _shifted_rolling_mean(group: pd.Series, window: int, played: pd.Series) -> pd.Series:
+    """Media de la estadística en los `window` últimos partidos JUGADOS antes de cada fila.
 
-    1. La media se calcula solo sobre los valores no nulos (partidos jugados),
-       así que la ventana son siempre los `window` últimos partidos de verdad.
-    2. `shift(1)` sobre el índice completo: la fila de un partido ve la media
-       hasta el partido ANTERIOR, nunca el propio (anti-leakage).
-    3. `ffill`: un partido programado (o un dato faltante) no tiene valor
-       propio, así que hereda la última media conocida, igual que las rachas.
+    - Partido jugado: la ventana son sus `window` partidos jugados anteriores
+      (`shift(1)`: nunca el propio, anti-leakage). Si a alguno le falta el dato
+      (xG ausente) se promedia el resto; si no lo tiene ninguno, queda vacía.
+    - Partido por jugar: hereda la media tal como quedó tras el último partido
+      jugado, igual que las rachas.
 
-    Sin el paso 1 la ventana contaba los programados como huecos: proyectando
-    la temporada, a 6 jornadas vista la media de 5 partidos ya no tenía ningún
-    valor y desde ahí casi todas las features de forma iban vacías, un caso
-    que el modelo no vio nunca al entrenar. Sin huecos (el histórico, todo
-    jugado y con xG) el resultado es idéntico al de la versión anterior,
-    `shift(1).rolling(window, min_periods=1).mean()`.
+    Los partidos por jugar no ocupan sitio en la ventana. Antes lo ocupaban como
+    huecos: proyectando la temporada, a 6 jornadas vista la media de 5 ya no
+    tenía datos y casi todas las features de forma iban vacías (ADR-031).
+
+    Solo heredan los partidos por jugar, no los jugados sin dato: con una
+    temporada entera sin xG (Understat caído, ADR-033), heredar congelaba la
+    media de mayo de 2025 en todos los partidos de año y medio, un valor que
+    parece válido y no lo es. Un dato que no existe queda vacío.
     """
-    known = group.dropna().rolling(window, min_periods=1).mean()
-    return known.reindex(group.index).shift(1).ffill()
+    is_played = played.loc[group.index].to_numpy()
+    done = group[is_played]
+    before_each = done.shift(1).rolling(window, min_periods=1).mean()
+    after_each = done.rolling(window, min_periods=1).mean().to_numpy()
+    out = before_each.reindex(group.index)
+    # Por posición, no con ffill: ffill saltaría también los jugados cuya media
+    # es nula y rescataría un valor viejo. n_before = jugados anteriores a la fila.
+    n_before = np.cumsum(is_played) - is_played
+    for pos in np.flatnonzero(~is_played):
+        k = n_before[pos]
+        out.iloc[pos] = after_each[k - 1] if k > 0 else np.nan
+    return out
 
 
 def add_rolling_form(long_df: pd.DataFrame, windows: list[int]) -> pd.DataFrame:
     """Añade medias móviles generales y separadas por condición local/visitante."""
     out = long_df.copy()
+    played = out["points"].notna()  # points solo es nulo en un partido por jugar
     for window in windows:
         for stat in FORM_STATS:
             out[f"{stat}_ma{window}"] = out.groupby("team")[stat].transform(
-                _shifted_rolling_mean, window=window
+                _shifted_rolling_mean, window=window, played=played
             )
             # Forma específica en la MISMA condición (local en casa, visitante fuera):
             # ventana sobre los partidos previos del equipo en esa condición.
             out[f"{stat}_venue_ma{window}"] = out.groupby(["team", "is_home"])[stat].transform(
-                _shifted_rolling_mean, window=window
+                _shifted_rolling_mean, window=window, played=played
             )
     return out
 

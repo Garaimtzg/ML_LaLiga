@@ -160,3 +160,37 @@ def test_forma_de_partidos_programados_hereda_la_ultima_conocida() -> None:
     # lo jugado no cambia: la fila k sigue viendo solo los k partidos anteriores
     assert pd.isna(team_a.loc[0, "goals_for_ma5"])
     assert team_a.loc[3, "goals_for_ma5"] == pytest.approx(sum(goals[:3]) / 3)
+
+
+def test_una_temporada_sin_xg_no_hereda_un_xg_viejo() -> None:
+    """Solo heredan los partidos POR JUGAR; un jugado sin dato no (ADR-033).
+
+    Caso real: la 2025-26 llegó sin xG (Understat inservible). Heredar en los
+    jugados congelaba la media de mayo de 2025 en año y medio de partidos: un
+    valor con pinta de válido que no lo es. Debe quedar vacío, como siempre.
+    """
+    n_xg, n_sin, n_prog = 6, 6, 2
+    n = n_xg + n_sin + n_prog
+    matches = pd.DataFrame(
+        {
+            "match_id": [f"m{i}" for i in range(n)],
+            "season": "2025-26",
+            "date": pd.date_range("2025-01-01", periods=n, freq="7D").strftime("%Y-%m-%d"),
+            "home_id": "a",
+            "away_id": [f"rival{i}" for i in range(n)],
+            "home_goals": [1] * (n_xg + n_sin) + [None] * n_prog,
+            "away_goals": [0] * (n_xg + n_sin) + [None] * n_prog,
+            "home_xg": [1.5] * n_xg + [None] * (n_sin + n_prog),
+            "away_xg": [0.5] * n_xg + [None] * (n_sin + n_prog),
+        }
+    )
+    team_a = form.add_rolling_form(form.long_format(matches), [5])
+    team_a = team_a[team_a["team"] == "a"].reset_index(drop=True)
+    # jugados sin xG: la ventana aún ve algún xG...
+    assert team_a.loc[n_xg + 4, "xg_for_ma5"] == pytest.approx(1.5)
+    # ...hasta que sus 5 jugados anteriores no tienen ninguno: vacío
+    assert pd.isna(team_a.loc[n_xg + 5, "xg_for_ma5"])
+    # los por jugar heredan el estado REAL tras el último jugado: xG vacío,
+    # goles con su media
+    assert team_a.loc[n_xg + n_sin :, "xg_for_ma5"].isna().all()
+    assert (team_a.loc[n_xg + n_sin :, "goals_for_ma5"] == 1.0).all()
