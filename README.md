@@ -55,7 +55,7 @@ cd ~ && mkdir -p proyectos && cd proyectos
 git clone https://github.com/Garaimtzg/ML_LaLiga.git
 cd ML_LaLiga
 uv sync                          # crea .venv e instala dependencias (usa uv.lock)
-uv run pytest -q                 # verifica que todo pasa (209 tests, sin red)
+uv run pytest -q                 # verifica que todo pasa (212 tests, sin red)
 
 # Población de la base de datos histórica (necesita internet; ~5 min la 1ª vez)
 uv run alaves ingest --historical
@@ -403,7 +403,7 @@ uv run streamlit run app/dashboard.py
 │           ├── understat.py          # xG de relleno vía API interna (ADR-011)
 │           └── clubelo.py
 ├── app/dashboard.py                  # dashboard Streamlit (solo presentación)
-└── tests/                            # 209 tests; fixtures congelados en tests/fixtures/
+└── tests/                            # 212 tests; fixtures congelados en tests/fixtures/
                                       # + tests/e2e/: el pipeline entero sobre una liga sintética
 ```
 
@@ -443,6 +443,7 @@ uv run streamlit run app/dashboard.py
 | [030](docs/decisions/030-fuentes-caidas-con-motivo.md) | Una fuente caída degrada y dice por qué: se conserva el motivo, se resume la forma del fallo y el parseo también degrada |
 | [031](docs/decisions/031-proxima-jornada-y-prediccion-auditable.md) | La próxima jornada sobrevive a los aplazados, la forma de los programados hereda la última conocida, cada predicción guarda el hash de sus features; test punta a punta sobre liga sintética |
 | [032](docs/decisions/032-datos-de-otra-temporada-y-bd-sin-historico.md) | Ningún dato de otra temporada entra en la BD (ventana de fechas en config, limpieza de lo ya colado); el ciclo sobrevive sin Elo y avisa si la BD no tiene histórico |
+| [033](docs/decisions/033-understat-inservible-no-tumba-el-historico.md) | Una Understat inservible no tumba la ingesta histórica (termina INCOMPLETA y dice qué falta); `sources` distingue "responde pero no sirve"; la proyección avisa si el calendario está incompleto |
 
 ## Principios de ML del proyecto (resumen de CLAUDE.md §5)
 
