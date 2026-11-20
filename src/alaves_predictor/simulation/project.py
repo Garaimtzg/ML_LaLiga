@@ -29,6 +29,23 @@ class Projection:
     variant: str
     n_played: int
     n_remaining: int
+    # Partidos de la temporada que no están en la BD ni jugados ni programados.
+    # Con el calendario a medias (p. ej. Understat caído: football-data solo
+    # trae los inminentes) la simulación cubre solo lo conocido y la tabla que
+    # sale NO es la clasificación final: quien la muestre debe decirlo (ADR-033).
+    n_missing: int = 0
+
+    def warning(self) -> str | None:
+        """Aviso para mostrar junto a la proyección, o None si está completa."""
+        if not self.n_missing:
+            return None
+        known = self.n_played + self.n_remaining
+        return (
+            f"Calendario incompleto: faltan {self.n_missing} partidos de la temporada "
+            f"(conocidos {known}). La simulación solo cubre esos, así que los puntos y "
+            "puestos NO son la clasificación final. Falta el calendario completo, que "
+            "aporta Understat (o FBref)."
+        )
 
 
 def split_season(
@@ -91,4 +108,5 @@ def project_standings(
         variant=variant,
         n_played=len(played),
         n_remaining=len(remaining),
+        n_missing=max(0, settings.league.matches_per_season - len(season_df)),
     )

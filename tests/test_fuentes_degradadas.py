@@ -192,3 +192,25 @@ def test_el_ciclo_avisa_si_la_bd_no_tiene_historico(mini_db, mini_settings, caps
     out = capsys.readouterr().out
     assert "alaves ingest --historical" in out
     assert str(mini_settings.data.db_path.resolve()) in out
+
+
+def test_la_proyeccion_con_calendario_incompleto_lo_dice() -> None:
+    """Con Understat caído solo se conocen los partidos inminentes: la tabla
+    simulada no es la clasificación final y hay que decirlo (ADR-033)."""
+    from alaves_predictor.simulation.project import Projection
+
+    def projection(n_missing: int) -> Projection:
+        return Projection(
+            season="2026-27",
+            result=None,  # type: ignore[arg-type]  # no se usa para el aviso
+            teams=[],
+            variant="sin_cuotas",
+            n_played=129,
+            n_remaining=10,
+            n_missing=n_missing,
+        )
+
+    assert projection(0).warning() is None
+    aviso = projection(241).warning()
+    assert aviso is not None
+    assert "faltan 241 partidos" in aviso and "NO son la clasificación final" in aviso
