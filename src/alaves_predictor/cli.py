@@ -104,6 +104,7 @@ def _run_matchday_cycle() -> None:
 
     conn = db.connect(settings.data.db_path)
     try:
+        _warn_if_no_history(conn, settings)
         # 1-3. Ingesta de la temporada en curso (resultados, xG, calendario, Elo)
         typer.echo("Ingiriendo la temporada en curso (resultados, xG, calendario, Elo)...")
         try:
@@ -157,6 +158,33 @@ def _run_matchday_cycle() -> None:
         _predict_and_simulate_next(conn, settings, active, df)
     finally:
         conn.close()
+
+
+def _warn_if_no_history(conn: sqlite3.Connection, settings: Settings) -> None:
+    """Avisa al empezar si la BD no tiene el histórico con el que se entrena.
+
+    El ciclo semanal solo trae la temporada en curso. Sobre una BD sin
+    histórico (un clon nuevo, otra carpeta) todo lo demás falla en cascada
+    —sin Elo, sin modelo que entrenar— y los avisos no dicen la causa real.
+    """
+    db.init_schema(conn)
+    complete = conn.execute(
+        "SELECT COUNT(*) AS n FROM (SELECT season FROM matches WHERE status = 'finished' "
+        f"AND season IN ({', '.join('?' * len(settings.historical_seasons))}) "
+        "GROUP BY season HAVING COUNT(*) >= ?)",
+        (*settings.historical_seasons, settings.league.matches_per_season),
+    ).fetchone()["n"]
+    if complete >= 2:
+        return
+    typer.secho(
+        f"AVISO: la BD {settings.data.db_path.resolve()} solo tiene {complete} de "
+        f"{len(settings.historical_seasons)} temporadas históricas completas, y sin ellas no "
+        "se puede entrenar ni predecir. Ejecuta antes, una sola vez: "
+        "`uv run alaves ingest --historical`. (Si ya tenías el histórico en otra carpeta, "
+        "tu BD está en el data/alaves.db de aquella carpeta.)",
+        fg=typer.colors.YELLOW,
+        bold=True,
+    )
 
 
 def _predict_and_simulate_next(conn, settings, bundle, features) -> None:

@@ -309,6 +309,53 @@ def _xg_coverage(conn: sqlite3.Connection, season: str) -> int:
     ).fetchone()["n"]
 
 
+def _out_of_season(dates: list[date], season: str, settings: Settings) -> list[date]:
+    """Fechas que NO pueden ser de `season` (fuera de su ventana, ADR-032)."""
+    first, last = settings.league.season_bounds(season)
+    return [d for d in dates if not first <= d <= last]
+
+
+def _check_fbref_season(
+    matches: list[fbref.FBrefMatch], season: str, settings: Settings
+) -> list[fbref.FBrefMatch]:
+    """Rechaza una página de FBref de OTRA temporada (ADR-032).
+
+    Pasa de verdad: la temporada en curso vive en la URL sin año, así que las
+    capturas viejas de esa URL en la Wayback Machine son de temporadas
+    anteriores. Antes se aceptaba la más reciente sin mirar las fechas: el
+    cruce con football-data abortaba el xG y, peor, sus partidos por jugar
+    entraban en el calendario como si fueran de la temporada en curso.
+    """
+    stray = _out_of_season([m.match_date for m in matches], season, settings)
+    if stray:
+        raise SourceFormatError(
+            f"la página de FBref es de otra temporada: {len(stray)} de {len(matches)} "
+            f"partidos con fecha fuera de la {season} (entre {min(stray)} y {max(stray)})"
+        )
+    return matches
+
+
+def purge_out_of_season_scheduled(conn: sqlite3.Connection, season: str, settings: Settings) -> int:
+    """Borra los programados de `season` con fecha imposible para ella (ADR-032).
+
+    Solo pueden venir de una fuente que sirvió otra temporada (antes de que se
+    validara). Se borran con lo que cuelga de ellos. Devuelve cuántos.
+    """
+    first, last = settings.league.season_bounds(season)
+    ids = [
+        (row["match_id"],)
+        for row in conn.execute(
+            "SELECT match_id FROM matches WHERE season = ? AND status = 'scheduled' "
+            "AND (date < ? OR date > ?)",
+            (season, first.isoformat(), last.isoformat()),
+        )
+    ]
+    for table in ("predictions", "features", "odds", "match_stats", "matches"):
+        conn.executemany(f"DELETE FROM {table} WHERE match_id = ?", ids)
+    conn.commit()
+    return len(ids)
+
+
 # Etiqueta de procedencia cuando el calendario sale de una página guardada a
 # mano: no es FBref en vivo, y conviene que el aviso lo diga.
 _FBREF_SOURCE_MANUAL = "fbref-cache-manual"
@@ -352,9 +399,10 @@ def _fetch_fbref_schedule(
     # 1. Cache local
     if cache.exists() and not force:
         try:
-            return fbref.parse_schedule(cache.read_text(encoding="utf-8")), fbref.SOURCE_NAME
+            cached = fbref.parse_schedule(cache.read_text(encoding="utf-8"))
+            return _check_fbref_season(cached, season, settings), fbref.SOURCE_NAME
         except SourceFormatError:
-            pass  # cache envenenada (página de bloqueo): re-resolver
+            pass  # cache envenenada (página de bloqueo u otra temporada): re-resolver
 
     # 2. FBref directo (fuente primaria; imprescindible en F7 para la temporada
     #    en curso). Para la temporada vigente se prueba PRIMERO la URL sin año:
@@ -372,7 +420,9 @@ def _fetch_fbref_schedule(
                 force=True,
                 impersonate=True,
             )
-            return fbref.parse_schedule(text), fbref.SOURCE_NAME
+            return _check_fbref_season(
+                fbref.parse_schedule(text), season, settings
+            ), fbref.SOURCE_NAME
         except (SourceDownloadError, SourceFormatError) as exc:
             attempts.append(f"  - {candidate}\n      -> {exc}")
 
@@ -405,7 +455,7 @@ def _fetch_fbref_schedule(
                 rate_limit_seconds=cfg.rate_limit_seconds,
                 force=True,
             )
-            matches = fbref.parse_schedule(text)
+            matches = _check_fbref_season(fbref.parse_schedule(text), season, settings)
         except (SourceDownloadError, SourceFormatError) as exc:
             last_error = exc
             continue
@@ -427,9 +477,10 @@ def _fetch_fbref_schedule(
     # snapshot guardado a mano es mejor que nada (ADR-030).
     if cache.exists():
         try:
-            return fbref.parse_schedule(cache.read_text(encoding="utf-8")), _FBREF_SOURCE_MANUAL
-        except SourceFormatError:
-            attempts.append(f"  - cache local ({cache})\n      -> no es una página válida")
+            cached = fbref.parse_schedule(cache.read_text(encoding="utf-8"))
+            return _check_fbref_season(cached, season, settings), _FBREF_SOURCE_MANUAL
+        except SourceFormatError as exc:
+            attempts.append(f"  - cache local ({cache})\n      -> no es válida: {exc}")
 
     manual = _fbref_schedule_urls(season, settings)[0]
     raise SourceDownloadError(
@@ -710,6 +761,8 @@ class FixturesReport:
     by_source: dict[str, int] = field(default_factory=dict)
     # Motivos por los que un origen no aportó nada (descarga o formato).
     problems: list[str] = field(default_factory=list)
+    # Por origen: partidos descartados por tener fecha de otra temporada (ADR-032).
+    out_of_season: dict[str, int] = field(default_factory=dict)
 
     def explain_empty(self) -> str:
         """Por qué no hay calendario, en una frase para el aviso del CLI."""
@@ -750,10 +803,18 @@ def _fbref_fixtures(settings: Settings, *, force: bool = False) -> list[fbref.FB
     """
     season = settings.current_season
     cfg = settings.sources.fbref
+
+    def this_season(text: str) -> list[fbref.FBrefFixture]:
+        fixtures = fbref.parse_fixtures(text)
+        stray = _out_of_season([f.match_date for f in fixtures], season, settings)
+        if stray:  # página de otra temporada (ADR-032): ni uno de sus partidos vale
+            raise SourceFormatError(f"calendario de FBref de otra temporada ({min(stray)})")
+        return fixtures
+
     cache = _fbref_schedule_cache(season, settings)
     if cache.exists() and not force:
         try:
-            return fbref.parse_fixtures(cache.read_text(encoding="utf-8"))
+            return this_season(cache.read_text(encoding="utf-8"))
         except SourceFormatError:
             pass  # cache envenenada: intentar descarga
     for candidate in _fbref_schedule_urls(season, settings):
@@ -765,7 +826,7 @@ def _fbref_fixtures(settings: Settings, *, force: bool = False) -> list[fbref.FB
                 force=True,
                 impersonate=True,
             )
-            return fbref.parse_fixtures(text)
+            return this_season(text)
         except (SourceDownloadError, SourceFormatError):
             continue
     return []
@@ -825,9 +886,15 @@ def ingest_fixtures(
     by_source: dict[str, int] = {}
     unknown: set[str] = set()
     merged: dict[tuple[str, str], PendingFixture] = {}
+    out_of_season: dict[str, int] = {}
+    first_day, last_day = settings.league.season_bounds(season)
 
     def add(label: str, home: str, away: str, source_name: str, **fields) -> None:
         """Fusiona un encuentro en el acumulador, resolviendo antes los equipos."""
+        if not first_day <= fields["match_date"] <= last_day:
+            # De otra temporada: ni su fecha ni su jornada valen para esta (ADR-032).
+            out_of_season[label] = out_of_season.get(label, 0) + 1
+            return
         if not (registry.knows(source_name, home) and registry.knows(source_name, away)):
             unknown.update(n for n in (home, away) if not registry.knows(source_name, n))
             return
@@ -973,6 +1040,7 @@ def ingest_fixtures(
         skipped_finished=skipped_finished,
         by_source=by_source,
         problems=problems,
+        out_of_season=out_of_season,
     )
 
 
@@ -999,6 +1067,13 @@ def _describe_teams(team_ids: list[str], total: int) -> str:
     return f"{len(team_ids)} equipos ({', '.join(team_ids[:3])}...)"
 
 
+def _without_elo(team_ids: list[str], total: int) -> str:
+    """'ningún equipo tiene Elo en la BD' / 'malaga no tiene Elo...', sin listar 31 nombres."""
+    if len(team_ids) == total:
+        return "NINGÚN equipo tiene Elo en la BD"
+    return f"{_describe_teams(team_ids, total)} no tiene(n) NINGÚN Elo en la BD"
+
+
 def ingest_matchday(
     conn: sqlite3.Connection, settings: Settings, *, force: bool = True
 ) -> MatchdayReport:
@@ -1019,6 +1094,17 @@ def ingest_matchday(
     registry.seed_db(conn)
     season = settings.current_season
     report = MatchdayReport(season=season)
+
+    # 0. Limpieza: programados con fecha imposible para esta temporada. Solo
+    #    pueden venir de una fuente que sirvió otra (ADR-032) y, si se quedan,
+    #    la proyección los simula como partidos de verdad.
+    purged = purge_out_of_season_scheduled(conn, season, settings)
+    if purged:
+        report.warnings.append(
+            f"Borrados {purged} partidos 'programados' de la {season} con fecha de otra "
+            "temporada: los metió una página de FBref de otra temporada en una pasada "
+            "anterior. El calendario se rehace en esta misma ingesta."
+        )
 
     # 1. Resultados jugados de la temporada actual (el CSV crece cada jornada).
     try:
@@ -1065,6 +1151,11 @@ def ingest_matchday(
         fixtures = ingest_fixtures(conn, settings, registry, force=force)
         report.scheduled = fixtures.inserted
         assign_scheduled_matchdays(conn, season, settings.league.matches_per_round)
+        for label, n in fixtures.out_of_season.items():
+            report.warnings.append(
+                f"{label}: descartados {n} partidos del calendario con fecha fuera de la "
+                f"{season} (la fuente sirvió otra temporada)."
+            )
         if fixtures.unknown_teams:
             report.warnings.append(
                 "Equipos del calendario sin alias en config/teams.toml: "
@@ -1120,7 +1211,7 @@ def ingest_matchday(
         detail = f"ClubElo no responde para {equipos}. Motivo: {motivo}"
         if sin_datos:
             report.warnings.append(
-                detail + f" ATENCIÓN: {', '.join(sin_datos)} no tiene(n) NINGÚN Elo en la BD; sus "
+                detail + f" ATENCIÓN: {_without_elo(sin_datos, len(registry.team_ids))}; sus "
                 "features de Elo van vacías."
             )
         else:
@@ -1175,7 +1266,7 @@ def ingest_historical(
         report.warnings.append(
             f"ClubElo no responde para: {detail}. Se reintentará en la próxima ingesta."
             + (
-                f" ATENCIÓN: {', '.join(sin_datos)} no tiene(n) ningún Elo en la BD."
+                f" ATENCIÓN: {_without_elo(sin_datos, len(registry.team_ids))}."
                 if sin_datos
                 else " (Todos conservan su Elo ya almacenado en la BD.)"
             )

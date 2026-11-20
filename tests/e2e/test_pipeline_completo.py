@@ -25,7 +25,9 @@ import pytest
 
 from alaves_predictor.config import DataConfig, Settings, load_settings
 from alaves_predictor.etl import db, http_cache
-from alaves_predictor.etl.ingest import ingest_historical, ingest_matchday
+from alaves_predictor.etl.ingest import ingest_historical, ingest_matchday, make_match_id
+from alaves_predictor.etl.sources import clubelo, fbref, understat
+from alaves_predictor.etl.teams import TeamRegistry
 from alaves_predictor.etl.validate import validate_db
 from alaves_predictor.evaluation.season import evaluate_season
 from alaves_predictor.features.build import build_features, feature_columns
@@ -63,6 +65,7 @@ class _Internet:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, today: date) -> None:
         self._monkeypatch = monkeypatch
+        self._overrides: dict[str, tuple[int, bytes]] = {}
         self.go_to(today)
         monkeypatch.setattr(http_cache, "_download", self._download)
         monkeypatch.setattr(
@@ -81,7 +84,13 @@ class _Internet:
         moment = datetime(today.year, today.month, today.day, 10, 0, tzinfo=UTC)
         self._monkeypatch.setattr(predict, "now_utc", lambda: moment)
 
+    def override(self, url: str, status: int, body: bytes = b"") -> None:
+        """Lo que sirve una URL concreta pase lo que pase (una fuente caída o rara)."""
+        self._overrides[url] = (status, body)
+
     def _download(self, url: str, headers, impersonate: bool) -> tuple[int, bytes]:
+        if url in self._overrides:
+            return self._overrides[url]
         return self._web.get(url, (404, b""))
 
 
@@ -151,5 +160,70 @@ def test_pipeline_completo_sobre_liga_sintetica(settings, monkeypatch) -> None:
         assert sorted(rows["matchday"].astype(int).tolist()) == [9] + [16] * 10
         failed = [r for r in validate_db(conn, settings) if not r.passed]
         assert failed == [], failed
+    finally:
+        conn.close()
+
+
+def test_ciclo_semanal_con_fuentes_degradadas_y_bd_sin_historico(settings, monkeypatch) -> None:
+    """La ejecución real del 20-nov que acabó en crash (ADR-032).
+
+    BD recién creada (sin `ingest --historical`), FBref directo bloqueado y la
+    Wayback Machine devolviendo, para la URL sin año, una captura de la 2025-26
+    a mitad de temporada; Understat respondiendo HTML y ClubElo con 502.
+    """
+    web = _Internet(monkeypatch, date(2026, 11, 5))
+    season = settings.current_season
+    fb_cfg = settings.sources.fbref
+    current_url = fbref.current_schedule_url(fb_cfg)
+    stamp = "20260201000000"
+    stale_page = liga_sintetica.build_web(date(2026, 2, 1))[fbref.schedule_url("2025-26", fb_cfg)]
+    web.override(current_url, 403)
+    web.override(fbref.cdx_url(season, fb_cfg, target=current_url), 200, f"{stamp}\n".encode())
+    web.override(fbref.snapshot_url(stamp, season, fb_cfg, target=current_url), *stale_page)
+    web.override(
+        understat.league_data_url(season, settings.sources.understat),
+        200,
+        b"<!DOCTYPE html><html><title>Just a moment...</title></html>",
+    )
+    for team in settings.teams.values():
+        web.override(
+            clubelo.club_url(team.aliases_for("clubelo")[0], settings.sources.clubelo), 502
+        )
+
+    conn = db.connect(settings.data.db_path)
+    try:
+        # Lo que dejó la versión anterior: un "programado" de la página vieja.
+        db.init_schema(conn)
+        TeamRegistry(settings.teams).seed_db(conn)
+        stale_id = make_match_id(season, "girona", "rayo-vallecano")
+        conn.execute(
+            "INSERT INTO matches (match_id, season, matchday, date, home_id, away_id, status, "
+            "source, fetched_at) VALUES (?, ?, 25, '2026-02-21', 'girona', 'rayo-vallecano', "
+            "'scheduled', 'fbref', 'x')",
+            (stale_id, season),
+        )
+        conn.commit()
+
+        report = ingest_matchday(conn, settings)
+        warnings = " ".join(report.warnings)
+        assert report.finished == 119
+        assert "Borrados 1 partidos" in warnings  # lo que entró mal, fuera
+        assert "otra temporada" in warnings  # FBref: dice por qué no vale
+        assert "página HTML" in warnings and "Just a moment" in warnings  # Understat
+        assert "NINGÚN equipo tiene Elo" in warnings  # ClubElo, sin listar 31 nombres
+        first, last = settings.league.season_bounds(season)
+        stray = conn.execute(
+            "SELECT COUNT(*) AS n FROM matches WHERE season = ? AND (date < ? OR date > ?)",
+            (season, first.isoformat(), last.isoformat()),
+        ).fetchone()["n"]
+        assert stray == 0  # la captura de la 2025-26 no metió nada en el calendario
+        assert report.scheduled > 0  # el calendario de football-data sí entra
+
+        # Sin Elo ni histórico, las features se construyen (antes: MergeError)...
+        features = build_features(conn, settings, include_scheduled=True)
+        assert features["elo_clubelo_diff"].isna().all()
+        # ...y entrenar dice qué falta, en vez de reventar
+        with pytest.raises(ValueError, match="ingest --historical"):
+            train_models(features, settings)
     finally:
         conn.close()

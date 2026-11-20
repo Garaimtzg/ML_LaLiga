@@ -9,6 +9,12 @@ current_season = "2026-27"
 # LaLiga: 20 equipos -> 38 jornadas -> 380 partidos por temporada.
 # Parametrizado para que los tests puedan usar mini-ligas sintéticas.
 teams_per_season = 20
+# Ventana de fechas de una temporada "AAAA-BB": del season_start (MM-DD) de AAAA
+# al season_end del año siguiente. Lo que una fuente sirva fuera de ella es de
+# otra temporada y se rechaza (ADR-032). Hasta el 31-jul por la 2019-20, que
+# terminó el 19-jul-2020.
+season_start = "07-01"
+season_end = "07-31"
 
 [league.zones]
 # Rangos de posición [desde, hasta] de cada zona (1 = líder). Ajustable sin
