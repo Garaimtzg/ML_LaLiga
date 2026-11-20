@@ -47,6 +47,14 @@ máquina con acceso, y mientras tanto había tres problemas:
   dashboard avisan de que la tabla no es la clasificación final. El ciclo deja
   de imprimir la "posición esperada" del equipo foco sobre una simulación a
   medias.
+- **Medias móviles (corrige ADR-031)**: solo heredan la última media los
+  partidos **por jugar**. ADR-031 hacía heredar también a los jugados sin el
+  dato, y con la 2025-26 entera sin xG eso congelaba la media de xG de mayo de
+  2025 en todos los partidos de la 2025-26 y la 2026-27: un valor con pinta de
+  válido que no lo era. Un jugado vuelve a usar la ventana de sus últimos
+  partidos jugados (vacía si ninguno tiene el dato), exactamente como antes de
+  ADR-031. Verificado: con todo jugado, idéntico al original aun con un 30 % de
+  partidos sin xG.
 
 ## Consecuencias
 
